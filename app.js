@@ -21,6 +21,14 @@
   }
 
   function iso(d) { return d.toISOString().slice(0, 10); }
+  // "Qué día es" en el calendario del propio usuario, NO en UTC: toISOString()
+  // convierte a UTC y en cualquier huso horario positivo (media Europa,
+  // España incluida) la medianoche local cae en el día UTC anterior — usar
+  // iso() aquí mostraría o buscaría el santo/la fecha de AYER. Para lo que
+  // sale a un servidor (elección de coro) sigue valiendo iso(), sin tocar.
+  function localIso(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
 
   // Versión web estática (GitHub Pages, ramonfandos.es...): sin servidor -> sin comunidad/presencia.
   const GH = window.LH_GH === 1 || /^([a-z0-9-]+\.)?[a-z0-9-]+\.github\.io$/i.test(location.hostname || '');
@@ -36,6 +44,79 @@
     if (/(^|\.)github\.io$/.test(host)) return { name: 'GitHub Pages', owner: 'Microsoft' };
     if (host === 'ramonfandos.es' || host.endsWith('.ramonfandos.es')) return { name: 'DonDominio', owner: null };
     return { name: 'Render', owner: null };
+  }
+
+  /* --------------------------- Instalar la app --------------------------- */
+  // El navegador dispara 'beforeinstallprompt' cuando decide que la app es
+  // instalable (Android/Chrome/Edge); se guarda el evento para poder lanzar
+  // el diálogo nativo cuando el usuario lo pida, en vez de solo cuando el
+  // navegador decide mostrarlo por su cuenta. iOS Safari no tiene ese evento
+  // -no hay forma programática de instalar-, así que ahí solo se explica el
+  // camino manual (Compartir -> Añadir a pantalla de inicio).
+  let deferredInstallPrompt = null;
+  const INSTALL_DISMISS_KEY = 'liturgia.install.dismissed.v1';
+  function isStandalone() {
+    return (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+  }
+  function isIOSDevice() {
+    return /iphone|ipad|ipod/i.test(navigator.userAgent || '');
+  }
+  function installDismissed() {
+    try { return localStorage.getItem(INSTALL_DISMISS_KEY) === '1'; } catch (e) { return false; }
+  }
+  function dismissInstall() {
+    try { localStorage.setItem(INSTALL_DISMISS_KEY, '1'); } catch (e) { }
+    const b = document.querySelector('#install-banner');
+    if (b) b.remove();
+  }
+  function canOfferInstall() {
+    return !isStandalone() && (!!deferredInstallPrompt || isIOSDevice());
+  }
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    refreshInstallBanner();
+  });
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    dismissInstall();
+  });
+  function installBannerHtml() {
+    if (installDismissed() || !canOfferInstall()) return '';
+    if (deferredInstallPrompt) {
+      return `<div class="note-box install-note" id="install-banner">
+        <b>Instala la app</b> para tenerla en tu pantalla de inicio y poder rezar sin conexión.
+        <div class="btn-row" style="margin-bottom:0">
+          <button type="button" class="btn primary" id="btn-install-go">Instalar</button>
+          <button type="button" class="btn" id="btn-install-no">Ahora no</button>
+        </div>
+      </div>`;
+    }
+    return `<div class="note-box install-note" id="install-banner">
+      <b>Instala la app</b> para tenerla en tu pantalla de inicio y poder rezar sin conexión:
+      toca <b>Compartir</b> &#8593; y luego <b>«Añadir a pantalla de inicio»</b>.
+      <div class="btn-row" style="margin-bottom:0"><button type="button" class="btn" id="btn-install-no">Entendido</button></div>
+    </div>`;
+  }
+  function attachInstallBanner() {
+    const go = document.querySelector('#btn-install-go');
+    if (go) go.addEventListener('click', async () => {
+      if (!deferredInstallPrompt) return;
+      try { deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; } catch (e) { }
+      deferredInstallPrompt = null;
+      dismissInstall();
+    });
+    const no = document.querySelector('#btn-install-no');
+    if (no) no.addEventListener('click', dismissInstall);
+  }
+  // El evento puede llegar tarde, ya con la portada pintada: si es así, se
+  // inserta el aviso in-situ en vez de esperar a la siguiente visita.
+  function refreshInstallBanner() {
+    const hero = document.querySelector('.home-hero');
+    if (hero && !document.querySelector('#install-banner') && !installDismissed() && canOfferInstall()) {
+      hero.insertAdjacentHTML('afterend', installBannerHtml());
+      attachInstallBanner();
+    }
   }
 
   /* -------------------------- Temas / ajustes -------------------------- */
@@ -108,6 +189,7 @@
     if (h === 'comunidad') return communityView();
     if (h === 'lecturas') return lecturasView();
     if (h === 'ajustes') return settingsView();
+    if (h === 'buscar') return buscarView();
     if (h === 'acerca') return acercaView();
     if (h === 'oficios') return oficiosView();
     if (h === 'oficios/nuevo') return oficioEditView('nuevo');
@@ -162,6 +244,7 @@
         ${Store.isPrayed(currentDate, recommended) ? `<div class="hero-done">Ya has rezado ${Liturgy.esc(hx.name)} hoy</div>` : ''}
       </section>`;
 
+      html += installBannerHtml();
       html += presenceLive();
       html += geoPrompt();
       html += dateNav();
@@ -177,6 +260,7 @@
       </div>`;
 
       view.innerHTML = html;
+      attachInstallBanner();
       attachGeoPrompt();
       attachHomePresence();
       checkIntentionNews();
@@ -373,7 +457,7 @@
   function dateNav() {
     return `<div class="date-nav">
       <button data-nav="-1" aria-label="Día anterior">&#8592;</button>
-      <input type="date" class="date-val" id="date-input" value="${iso(currentDate)}">
+      <input type="date" class="date-val" id="date-input" value="${localIso(currentDate)}">
       <button data-nav="1" aria-label="Día siguiente">&#8594;</button>
       <button data-nav="today">Hoy</button>
     </div>`;
@@ -508,6 +592,31 @@
     });
   }
 
+  /* ---------------------- Audio oficial (piezas fijas) ----------------------
+     Mecanismo para sustituir la voz sintética por una grabación real en
+     piezas que NO cambian de un día a otro (Gloria, Padre nuestro, cierre de
+     hora, antífona mariana de Completas…). El manifiesto empieza vacío: aquí
+     no se envía ninguna grabación, solo el enchufe para poder añadirlas sin
+     tocar código (ver public/audio-oficial/README.txt). El id es el mismo que
+     usan los favoritos y las grabaciones propias (Favs.idFor de la referencia
+     visible de la pieza), así que una sola grabación sirve para cualquier
+     pieza que comparta esa misma referencia, sin importar el día.
+     Nunca sustituye una grabación PERSONAL: esa gana siempre (ver startSpeak). */
+  let officialAudioManifest = null;
+  async function loadOfficialAudioManifest() {
+    if (officialAudioManifest) return officialAudioManifest;
+    try {
+      const res = await fetch('audio-oficial/manifest.json', { cache: 'force-cache' });
+      officialAudioManifest = (res && res.ok) ? await res.json() : {};
+    } catch (e) { officialAudioManifest = {}; }
+    return officialAudioManifest;
+  }
+  function officialAudioUrlFor(id) {
+    if (!id || !officialAudioManifest) return null;
+    const file = officialAudioManifest[id.replace(/-audio$/, '')];
+    return file ? 'audio-oficial/' + file : null;
+  }
+
   function stripForSpeech(node) {
     const clone = node.cloneNode(true);
     clone.querySelectorAll('button, audio, .note-box-edit').forEach((n) => n.remove());
@@ -567,13 +676,15 @@
     if (!el) return;
     const segments = buildSpeechSegments(el);
     if (!segments.length) return;
-    if (window.AudioNotes && AudioNotes.supported && AudioNotes.supported()) {
-      await Promise.all(segments.map(async (seg) => {
-        if (seg.type === 'block' && seg.id) {
-          try { seg.hasRecording = await AudioNotes.has(seg.id); } catch (e) { seg.hasRecording = false; }
-        }
-      }));
-    }
+    await loadOfficialAudioManifest();
+    const supportsNotes = window.AudioNotes && AudioNotes.supported && AudioNotes.supported();
+    await Promise.all(segments.map(async (seg) => {
+      if (seg.type !== 'block' || !seg.id) return;
+      if (supportsNotes) {
+        try { seg.hasRecording = await AudioNotes.has(seg.id); } catch (e) { seg.hasRecording = false; }
+      }
+      if (!seg.hasRecording) seg.officialUrl = officialAudioUrlFor(seg.id);
+    }));
     try { window.speechSynthesis.cancel(); } catch (e) { }
     speechQueue = segments;
     speechIndex = 0;
@@ -600,6 +711,14 @@
           speakText(seg.text);
         }
       }).catch(() => speakText(seg.text));
+      return;
+    }
+    if (seg.type === 'block' && seg.officialUrl) {
+      const audio = new Audio(seg.officialUrl);
+      speechAudio = audio;
+      audio.onended = () => { speechAudio = null; speakNext(); };
+      audio.onerror = () => { speechAudio = null; speakText(seg.text); };
+      audio.play().catch(() => { speechAudio = null; speakText(seg.text); });
       return;
     }
     if (!seg.text) { speakNext(); return; }
@@ -716,7 +835,7 @@
 
   function santosDelDia(fecha) {
     if (!window.Santos || !Santos.dias) return [];
-    const k = iso(fecha);
+    const k = localIso(fecha);
     if (Santos.dias[k] && Santos.dias[k].length) return Santos.dias[k];
     const mm = k.slice(5);
     for (const otro of Object.keys(Santos.dias)) {
@@ -806,7 +925,7 @@
     const o = Oraciones.getOracion(id);
     if (!o) return oracionesView();
     let html = topBar(o.titulo, (Oraciones.GRUPOS[o.g] || '') + ' · ' + o.fuente);
-    html += '<article class="prayer">' + rezoHtml(o.rezo) + '</article>';
+    html += `<article class="prayer"><div class="psalm-block"><div class="psalm-ref">${Liturgy.esc(o.titulo)}</div>${rezoHtml(o.rezo)}</div></article>`;
     html += doneBarHtml('orac_' + id, 'Rezada', 'Marcar como rezada');
     view.innerHTML = html;
     attachDone('orac_' + id, 'Rezada', 'Marcar como rezada');
@@ -955,7 +1074,7 @@
       const key = easter ? 'regina' : 'angelus';
       const titulo = easter ? 'Regina Caeli' : 'Ángelus';
       let html = topBar(titulo, fmtDate(currentDate) + (easter ? ' · Tiempo de Pascua' : ''));
-      html += '<article class="prayer">' + rezoHtml(Oraciones.ANGELUS[key]) + '</article>';
+      html += `<article class="prayer"><div class="psalm-block"><div class="psalm-ref">${Liturgy.esc(titulo)}</div>${rezoHtml(Oraciones.ANGELUS[key])}</div></article>`;
       html += doneBarHtml('angelus', titulo + ' rezado', 'Marcar como rezado');
       view.innerHTML = html;
       attachDone('angelus', titulo + ' rezado', 'Marcar como rezado');
@@ -1188,6 +1307,33 @@
     const payload = { nombre: office.nombre, piezas: office.piezas || [] };
     const data = b64EncodeUtf8(JSON.stringify(payload));
     return location.origin + location.pathname + '#oficios/importar/' + encodeURIComponent(data);
+  }
+
+  // Compartir una hora OFICIAL de hoy (no un oficio personalizado): un
+  // enlace a la hora + un fragmento real de lo que se está rezando, para
+  // invitar a alguien a rezarla también. Quien lo abra otro día verá la
+  // hora oficial de ESE día, que es lo correcto (no tiene sentido rezar
+  // "la Vísperas de ayer").
+  function compartirHora(hourId, hx) {
+    const el = view.querySelector('.prayer');
+    let snip = '';
+    if (el) {
+      const first = el.querySelector('.ant, .psalm-ref');
+      if (first) snip = stripForSpeech(first).slice(0, 160);
+    }
+    const url = location.origin + location.pathname + '#hora/' + hourId;
+    const title = hx.name + ' · ' + fmtDate(currentDate);
+    const text = 'Reza ' + hx.name + ' conmigo — ' + fmtDate(currentDate) + (snip ? '\n\n“' + snip + '”' : '');
+    if (navigator.share) {
+      navigator.share({ title, text, url }).catch(() => { });
+      return;
+    }
+    const full = title + '\n' + text + '\n' + url;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(full).then(() => toast('Copiado. Compártelo por donde quieras.')).catch(() => prompt('Copia esto para compartir:', full));
+    } else {
+      prompt('Copia esto para compartir:', full);
+    }
   }
 
   async function copiarEnlaceOficio(office) {
@@ -2231,6 +2377,7 @@
         <a class="btn small" href="#oficios/editar/${encodeURIComponent(office.id)}">Editar</a>
       </div>
     </div>`;
+    if (office.piezas && office.piezas.length) html += `<div class="btn-row"><button type="button" class="btn" id="btn-modo-coro">&#128225; Modo coro</button></div>`;
     html += (office.piezas && office.piezas.length) ? customOfficeHtml(office) : '<div class="note-box">Este oficio todavía no tiene piezas.</div>';
     html += `<div class="done-bar">
       <button class="btn ${done ? 'marked' : 'primary'}" id="btn-done">${done ? '&#10003; Hora rezada' : 'Marcar como rezada'}</button>
@@ -2240,6 +2387,9 @@
     attachFavStars();
     enhancePrayerText();
     attachAudioNotes();
+
+    const btnCoroA = view.querySelector('#btn-modo-coro');
+    if (btnCoroA) btnCoroA.addEventListener('click', () => entrarModoCoro(office));
 
     const usarOficial = view.querySelector('#usar-oficial-btn');
     if (usarOficial) usarOficial.addEventListener('click', () => {
@@ -2281,6 +2431,11 @@
 
     html += optsHtml;
 
+    html += `<div class="btn-row">
+      <button type="button" class="btn" id="btn-modo-coro">&#128225; Modo coro</button>
+      <button type="button" class="btn" id="btn-compartir-hora">&#128257; Compartir</button>
+    </div>`;
+
     html += Liturgy.render(hourId, opt, null);
 
     html += `<div class="done-bar">
@@ -2299,6 +2454,14 @@
     attachCustomText();
     if (!GH) loadIntentions(intoSlot('#intentions-slot'));
     if (!GH) attachNowOthers();
+
+    const btnCoroH = $('#btn-modo-coro');
+    if (btnCoroH) btnCoroH.addEventListener('click', async () => {
+      const piezas = await importarHoraOficial(hourId, currentDate);
+      entrarModoCoro({ nombre: hx.name, piezas });
+    });
+    const btnShareH = $('#btn-compartir-hora');
+    if (btnShareH) btnShareH.addEventListener('click', () => compartirHora(hourId, hx));
 
     const btnDone = $('#btn-done');
     if (btnDone) {
@@ -3307,12 +3470,30 @@
         Mientras tanto, la app ya incluye cada día los <a href="#lecturas">salmos y lecturas de la Liturgia de las Horas y de la Misa</a> en la traducción oficial usada por el breviario.
       </div>`;
       html += `<div class="card">
-        <b>Importar texto bíblico</b>
+        <b>Importar texto bíblico (JSON)</b>
         <p style="color:var(--ink-soft);font-size:.9rem">Formato JSON: <code>{ "version": "…", "books": [ { "abbrev": "Gn", "name": "Génesis", "chapters": [ ["versículo", "…"], … ] } ] }</code></p>
         <input type="file" id="bible-file" accept=".json,application/json" style="margin:10px 0">
         <div id="bible-import-msg"></div>
       </div>`;
     }
+
+    html += `<div class="card">
+      <b>O pega el texto, sin JSON</b>
+      <p style="color:var(--ink-soft);font-size:.9rem">
+        Un libro a la vez (o varios seguidos, si cada uno empieza con su nombre). Un capítulo por línea (<code>Cap. 1</code>) y, debajo, un versículo por línea empezando por su número (<code>1 En el principio creó Dios…</code>). Se puede repetir esto varias veces: los libros se van sumando a los que ya tengas.
+      </p>
+      <label for="bible-txt-book">Si el texto no trae el nombre del libro, elígelo aquí:</label><br>
+      <select id="bible-txt-book" class="date-val" style="width:100%;margin:6px 0 10px">
+        <option value="">(el propio texto ya indica el libro)</option>
+        ${Biblia.flatBooks().map((b) => `<option value="${b.abbrev}">${Liturgy.esc(b.name)}</option>`).join('')}
+      </select>
+      <textarea id="bible-txt-paste" rows="6" class="input" style="width:100%" placeholder="Pega aquí el texto…"></textarea>
+      <div class="btn-row">
+        <input type="file" id="bible-txt-file" accept=".txt,text/plain">
+        <button type="button" class="btn primary" id="bible-txt-go">Importar este texto</button>
+      </div>
+      <div id="bible-txt-msg"></div>
+    </div>`;
 
     for (const g of Biblia.BOOKS) {
       html += `<div class="book-group-title">${g.group}</div><div class="bible-grid">`;
@@ -3351,6 +3532,25 @@
         if (r.ok) m.innerHTML += ' <a href="#biblia">Ver la Biblia</a>';
       });
     }
+
+    const txtGo = $('#bible-txt-go');
+    if (txtGo) txtGo.addEventListener('click', async () => {
+      const msg = $('#bible-txt-msg');
+      const sel = $('#bible-txt-book');
+      const ta = $('#bible-txt-paste');
+      const fileInp = $('#bible-txt-file');
+      let texto = ta.value;
+      if (fileInp.files[0]) {
+        try { texto = await fileInp.files[0].text(); } catch (e) { msg.textContent = 'No se pudo leer el archivo.'; return; }
+      }
+      if (!texto || !texto.trim()) { msg.textContent = 'Pega el texto o elige un archivo .txt.'; return; }
+      msg.textContent = 'Procesando…';
+      const r = Biblia.importTexto(texto, sel.value || null);
+      if (!r.ok) { msg.textContent = 'Error: ' + r.error; return; }
+      msg.innerHTML = `¡Importado! ${r.books} libro(s): ${Liturgy.esc(r.names.join(', '))}. ${r.verses} versículos. <a href="#biblia">Ver la Biblia</a>`;
+      ta.value = '';
+      fileInp.value = '';
+    });
   }
 
   function bibliaBookView(abbrev) {
@@ -3404,6 +3604,155 @@
   }
 
   /* ------------------------------ Ajustes ------------------------------ */
+  /* ------------------------------ Buscar ------------------------------ */
+  // Busca en todo lo que ya vive como datos en el cliente (oraciones,
+  // salterio, santoral y, si se importó, la Biblia). Las siete horas no
+  // entran: su contenido cambia cada día y recorrerlas todas sería lento
+  // y no aportaría casi nada frente a buscar directamente en el salterio.
+  function normalizaBusca(s) {
+    return String(s || '').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+  }
+  function snippet(texto, qNorm, radius) {
+    radius = radius || 70;
+    texto = String(texto || '');
+    const i = normalizaBusca(texto).indexOf(qNorm);
+    if (i === -1) return texto.slice(0, radius * 2) + (texto.length > radius * 2 ? '…' : '');
+    const start = Math.max(0, i - radius);
+    const end = Math.min(texto.length, i + qNorm.length + radius);
+    return (start > 0 ? '…' : '') + texto.slice(start, end) + (end < texto.length ? '…' : '');
+  }
+  function resaltaCoincidencia(texto, qNorm) {
+    texto = String(texto || '');
+    const i = normalizaBusca(texto).indexOf(qNorm);
+    if (i === -1 || !qNorm) return Liturgy.esc(texto);
+    return Liturgy.esc(texto.slice(0, i)) + '<mark>' + Liturgy.esc(texto.slice(i, i + qNorm.length)) + '</mark>' + Liturgy.esc(texto.slice(i + qNorm.length));
+  }
+  function fmtDiaMes(fechaIso) {
+    const p = String(fechaIso || '').split('-').map((x) => parseInt(x, 10));
+    if (p.length < 3 || !p[1]) return fechaIso;
+    return p[2] + ' de ' + MONTHS[p[1] - 1];
+  }
+
+  function buscarEnTodo(qRaw) {
+    const q = normalizaBusca(qRaw).trim();
+    const out = { oraciones: [], salmos: [], santos: [], biblia: [] };
+    if (q.length < 2) return out;
+
+    const orac = (window.Oraciones && Oraciones.ORACIONES) || [];
+    for (const o of orac) {
+      const texto = (o.rezo || []).map((r) => r[1]).join(' ');
+      if (normalizaBusca(o.titulo).indexOf(q) !== -1 || normalizaBusca(texto).indexOf(q) !== -1) {
+        out.oraciones.push({ id: o.id, titulo: o.titulo, snip: snippet(texto, q) });
+      }
+    }
+
+    const psalmos = (window.Salterio && Salterio.PSALMOS) || {};
+    for (const n of Object.keys(psalmos).sort((a, b) => (+a) - (+b))) {
+      const texto = (psalmos[n] || []).map((tr) => tr.t).join(' ');
+      if (normalizaBusca(texto).indexOf(q) !== -1) out.salmos.push({ n, snip: snippet(texto, q) });
+    }
+
+    if (window.Santos && Santos.dias) {
+      // El santoral repite cada fiesta de fecha fija en varios años (2024-2030);
+      // se queda solo el más cercano al año actual, para no listar 6-7 filas
+      // casi iguales, y se ordena por mes/día (calendario), no por año.
+      const seen = {};
+      const todayY = new Date().getFullYear();
+      for (const fecha of Object.keys(Santos.dias)) {
+        for (const nombre of Santos.dias[fecha]) {
+          if (normalizaBusca(nombre).indexOf(q) === -1) continue;
+          const dedupeKey = normalizaBusca(nombre) + '|' + fecha.slice(5);
+          const year = parseInt(fecha.slice(0, 4), 10) || todayY;
+          const prev = seen[dedupeKey];
+          if (!prev || Math.abs(year - todayY) < Math.abs(prev.year - todayY)) {
+            seen[dedupeKey] = { fecha, nombre, year };
+          }
+        }
+      }
+      out.santos = Object.keys(seen).map((k) => ({ fecha: seen[k].fecha, nombre: seen[k].nombre }));
+      out.santos.sort((a, b) => a.fecha.slice(5).localeCompare(b.fecha.slice(5)));
+    }
+
+    if (window.Biblia && Biblia.hasText && Biblia.hasText() && Biblia.search) {
+      try { out.biblia = Biblia.search(qRaw, 30) || []; } catch (e) { out.biblia = []; }
+    }
+
+    return out;
+  }
+
+  function buscarResultsHtml(res, qRaw) {
+    const q = normalizaBusca(qRaw).trim();
+    if (!qRaw || !qRaw.trim()) {
+      return '<div class="note-box">Busca una palabra o frase en las oraciones, el salterio, el santoral y, si la importaste, tu Biblia.</div>';
+    }
+    if (q.length < 2) return '<div class="note-box">Escribe al menos 2 letras.</div>';
+    const total = res.oraciones.length + res.salmos.length + res.santos.length + res.biblia.length;
+    if (!total) return `<div class="note-box">Sin resultados para «${Liturgy.esc(qRaw)}».</div>`;
+
+    let h = '';
+    if (res.oraciones.length) {
+      h += '<div class="section-title">Oraciones</div>';
+      for (const r of res.oraciones) {
+        h += `<a class="card" href="#oraciones/${encodeURIComponent(r.id)}" style="display:block">
+          <div class="rubric">${Liturgy.esc(r.titulo)}</div>
+          <p class="comm-sub">${resaltaCoincidencia(r.snip, q)}</p>
+        </a>`;
+      }
+    }
+    if (res.salmos.length) {
+      h += `<div class="section-title">Salmos (${res.salmos.length})</div>`;
+      for (const r of res.salmos.slice(0, 30)) {
+        h += `<details class="card"><summary>Salmo ${Liturgy.esc(r.n)}</summary><p class="comm-sub">${resaltaCoincidencia(r.snip, q)}</p></details>`;
+      }
+      if (res.salmos.length > 30) h += `<p class="comm-sub">y ${res.salmos.length - 30} más…</p>`;
+    }
+    if (res.santos.length) {
+      h += `<div class="section-title">Santoral (${res.santos.length})</div>`;
+      h += '<div class="card">';
+      for (const r of res.santos.slice(0, 40)) {
+        h += `<button type="button" class="btn small" style="display:block;width:100%;text-align:left;margin-bottom:6px" data-ir-fecha="${Liturgy.esc(r.fecha)}">${Liturgy.esc(fmtDiaMes(r.fecha))} — ${Liturgy.esc(r.nombre)}</button>`;
+      }
+      if (res.santos.length > 40) h += `<p class="comm-sub">y ${res.santos.length - 40} más…</p>`;
+      h += '</div>';
+    }
+    if (res.biblia.length) {
+      h += '<div class="section-title">Tu Biblia importada</div>';
+      for (const r of res.biblia) {
+        h += `<a class="card" href="#biblia/cap/${encodeURIComponent(r.abbrev)}/${r.chapter}" style="display:block">
+          <div class="rubric">${Liturgy.esc(r.name)} ${r.chapter},${r.verse}</div>
+          <p class="comm-sub">${resaltaCoincidencia(r.text, q)}</p>
+        </a>`;
+      }
+    }
+    return h;
+  }
+
+  function buscarView() {
+    let html = `<div class="prayer-toolbar">
+      <button class="icon-btn" onclick="location.hash='#hoy'" aria-label="Volver">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20v-2z"/></svg>
+      </button>
+      <div class="tt"><h1>Buscar</h1></div>
+    </div>`;
+    html += `<div class="card"><input type="search" id="buscar-q" class="input" placeholder="Buscar una palabra o frase…" autocomplete="off"></div>`;
+    html += `<div id="buscar-res"></div>`;
+    view.innerHTML = html;
+    const input = $('#buscar-q');
+    const res = $('#buscar-res');
+    res.innerHTML = buscarResultsHtml({ oraciones: [], salmos: [], santos: [], biblia: [] }, '');
+    input.focus();
+    input.addEventListener('input', () => {
+      res.innerHTML = buscarResultsHtml(buscarEnTodo(input.value), input.value);
+      res.querySelectorAll('[data-ir-fecha]').forEach((b) => {
+        b.addEventListener('click', () => {
+          currentDate = new Date(b.dataset.irFecha + 'T00:00:00');
+          currentDate.setHours(0, 0, 0, 0);
+          location.hash = '#hoy';
+        });
+      });
+    });
+  }
+
   function settingsView() {
     const s = Store.get();
     const fs = { S: 'Peque\u00f1a', M: 'Normal', L: 'Grande', XL: 'Muy grande' };
@@ -3465,6 +3814,15 @@
         <div id="offline-status" style="font-family:var(--sans);font-size:.85rem;color:var(--ink-soft)">Comprobando…</div>
       </div>
 
+      ${isStandalone() ? '' : `
+      <div class="card">
+        <div class="lbl" style="font-weight:700">Instalar la app</div>
+        <div class="desc" style="color:var(--ink-soft);font-family:var(--sans);font-size:.85rem;margin:6px 0 10px">
+          En tu pantalla de inicio, sin tienda de aplicaciones: se abre igual que ahora, pero sin la barra del navegador.
+        </div>
+        <div class="btn-row"><button type="button" class="btn primary" id="btn-install-settings">Instalar / cómo instalar</button></div>
+      </div>`}
+
       <div class="card">
         <div class="lbl" style="font-weight:700">Progreso de hoy</div>
         <div class="desc" style="color:var(--ink-soft);font-family:var(--sans);font-size:.85rem;margin:6px 0 10px">
@@ -3510,6 +3868,18 @@
     wireReminders();
     checkOfflineStatus();
     renderVoicePicker();
+
+    const instBtn = $('#btn-install-settings');
+    if (instBtn) instBtn.addEventListener('click', async () => {
+      if (deferredInstallPrompt) {
+        try { deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; } catch (e) { }
+        deferredInstallPrompt = null;
+      } else if (isIOSDevice()) {
+        toast('Toca <b>Compartir</b> &#8593; en la barra de Safari y luego <b>«Añadir a pantalla de inicio»</b>.');
+      } else {
+        toast('Tu navegador no ofrece instalación en este momento. Prueba desde su menú («Instalar app» o «Añadir a pantalla de inicio»).');
+      }
+    });
   }
 
   /* ------------------------------ Recordatorios ------------------------------ */
@@ -4013,6 +4383,8 @@
       $('#btn-menu').setAttribute('aria-expanded', 'true');
     });
     $('#btn-settings').addEventListener('click', () => { location.hash = '#ajustes'; });
+    const btnSearch = $('#btn-search');
+    if (btnSearch) btnSearch.addEventListener('click', () => { location.hash = '#buscar'; });
     const closeMenu = () => {
       drawer.classList.remove('open');
       drawer.setAttribute('aria-hidden', 'true');
