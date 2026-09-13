@@ -92,7 +92,6 @@
     }
     if (h.startsWith('personal/pray/')) return personalPrayView(h.split('personal/pray/')[1]);
     if (h === 'personal') return personalView();
-    if (h === 'latin') return latinView();
     if (h.startsWith('ortodoxa/oficio/')) return ortodoxoOficioView(h.split('ortodoxa/oficio/')[1]);
     if (h.startsWith('ortodoxa/kathisma/')) return kathismaView(parseInt(h.split('ortodoxa/kathisma/')[1], 10));
     if (h === 'ortodoxa/salterio') return salterioView();
@@ -116,7 +115,13 @@
     if (h.startsWith('oficios/editar/')) return oficioEditView(h.split('oficios/editar/')[1]);
     if (h.startsWith('oficios/importar/')) return oficioImportarView(h.split('oficios/importar/')[1]);
     if (SPACES_OK && h === 'comunidad-oficios') return comunidadOficiosView();
+    if (SPACES_OK && /^rezar\/([^/]+)$/.test(h)) return rezarPublicoEspacioView(decodeURIComponent(h.match(/^rezar\/([^/]+)$/)[1]));
+    if (SPACES_OK && /^rezar\/([^/]+)\/(\d+)$/.test(h)) {
+      const mm = h.match(/^rezar\/([^/]+)\/(\d+)$/);
+      return rezarPublicoOficioView(decodeURIComponent(mm[1]), +mm[2]);
+    }
     if (SPACES_OK && /^comunidad-oficios\/(\d+)\/miembros$/.test(h)) return comunidadMiembrosView(+h.match(/^comunidad-oficios\/(\d+)\/miembros$/)[1]);
+    if (SPACES_OK && /^comunidad-oficios\/(\d+)\/piezas$/.test(h)) return comunidadPiezasView(+h.match(/^comunidad-oficios\/(\d+)\/piezas$/)[1]);
     if (SPACES_OK && /^comunidad-oficios\/(\d+)\/nuevo$/.test(h)) return comunidadOficioEditView(+h.match(/^comunidad-oficios\/(\d+)\/nuevo$/)[1], null);
     if (SPACES_OK && /^comunidad-oficios\/(\d+)\/editar\/(\d+)$/.test(h)) {
       const mm = h.match(/^comunidad-oficios\/(\d+)\/editar\/(\d+)$/);
@@ -415,6 +420,94 @@
   let speechAudio = null;
   let speechBtn = null;
 
+  /* ------------------------- Voces de lectura ------------------------- */
+  // getVoices() puede devolver la lista vacía la primera vez (se carga en
+  // segundo plano); se guarda en caché y se refresca con 'voiceschanged'.
+  let cachedVoices = [];
+  function refreshVoices() {
+    try { cachedVoices = window.speechSynthesis.getVoices() || []; } catch (e) { cachedVoices = []; }
+    return cachedVoices;
+  }
+  if ('speechSynthesis' in window) {
+    refreshVoices();
+    window.speechSynthesis.addEventListener('voiceschanged', () => {
+      refreshVoices();
+      if (document.querySelector('#voice-picker')) renderVoicePicker();
+    });
+  }
+  function spanishVoices() {
+    return cachedVoices.filter((v) => (v.lang || '').toLowerCase().indexOf('es') === 0);
+  }
+  // No todas las voces "es" suenan igual: las de red (Google, Microsoft
+  // "Online"/"Natural", Apple "Enhanced"/"Premium") son mucho más naturales
+  // que la voz compacta del propio sistema, que suele venir primera en la
+  // lista sin más criterio. Se puntúan para elegir la mejor por defecto;
+  // el ajuste manual del usuario en Ajustes gana siempre a esta puntuación.
+  function scoreVoice(v) {
+    const name = (v.name || '').toLowerCase();
+    const lang = (v.lang || '').toLowerCase();
+    let s = 0;
+    if (lang === 'es-es') s += 3;
+    else if (lang.indexOf('es') === 0) s += 1;
+    if (/google/.test(name)) s += 4;
+    if (/natural|online|neural/.test(name)) s += 4;
+    if (/enhanced|premium|plus/.test(name)) s += 3;
+    if (/compact|espeak|lite/.test(name)) s -= 4;
+    if (v.localService === false) s += 1;
+    return s;
+  }
+  function bestSpanishVoice() {
+    const list = spanishVoices();
+    if (!list.length) return null;
+    return list.slice().sort((a, b) => scoreVoice(b) - scoreVoice(a))[0];
+  }
+  function pickVoice() {
+    const wanted = Store.get().voiceName;
+    if (wanted) {
+      const found = spanishVoices().find((v) => v.name === wanted);
+      if (found) return found;
+    }
+    return bestSpanishVoice();
+  }
+  function voiceLabel(v) {
+    return v.name + (v.lang ? ' · ' + v.lang : '');
+  }
+  function renderVoicePicker() {
+    const slot = document.querySelector('#voice-picker');
+    if (!slot) return;
+    if (!('speechSynthesis' in window)) {
+      slot.innerHTML = '<p class="comm-sub">Tu navegador no tiene lectura por voz.</p>';
+      return;
+    }
+    const list = spanishVoices();
+    if (!list.length) {
+      slot.innerHTML = '<p class="comm-sub">Comprobando voces disponibles… si no aparece ninguna, tu dispositivo no tiene voces en español instaladas.</p>';
+      return;
+    }
+    const current = Store.get().voiceName || '';
+    let html = '<select id="voice-select" class="input">';
+    html += `<option value=""${current ? '' : ' selected'}>Automática (la más natural disponible)</option>`;
+    for (const v of list) {
+      html += `<option value="${Liturgy.esc(v.name)}"${v.name === current ? ' selected' : ''}>${Liturgy.esc(voiceLabel(v))}</option>`;
+    }
+    html += '</select>';
+    html += '<div class="btn-row"><button class="btn" id="voice-test" type="button">Probar esta voz</button></div>';
+    slot.innerHTML = html;
+    const sel = slot.querySelector('#voice-select');
+    if (sel) sel.addEventListener('change', () => Store.set({ voiceName: sel.value }));
+    const test = slot.querySelector('#voice-test');
+    if (test) test.addEventListener('click', () => {
+      const name = (slot.querySelector('#voice-select') || {}).value || '';
+      try { window.speechSynthesis.cancel(); } catch (e) { }
+      const u = new SpeechSynthesisUtterance('Bendigamos al Señor. Demos gracias a Dios.');
+      u.lang = 'es-ES';
+      u.rate = 0.95;
+      const v = name ? list.find((x) => x.name === name) : bestSpanishVoice();
+      if (v) u.voice = v;
+      window.speechSynthesis.speak(u);
+    });
+  }
+
   function stripForSpeech(node) {
     const clone = node.cloneNode(true);
     clone.querySelectorAll('button, audio, .note-box-edit').forEach((n) => n.remove());
@@ -518,8 +611,7 @@
       const u = new SpeechSynthesisUtterance(text);
       u.lang = 'es-ES';
       u.rate = 0.95;
-      const voices = window.speechSynthesis.getVoices();
-      const v = voices.find((x) => (x.lang || '').toLowerCase().indexOf('es') === 0);
+      const v = pickVoice();
       if (v) u.voice = v;
       u.onend = () => speakNext();
       u.onerror = () => speakNext();
@@ -1156,39 +1248,120 @@
      igual que "Comunidad de rezo". Un código de acceso hace de identidad,
      como en los coros -sin correo ni cuenta-.
      ==================================================================== */
+  /* Lectura pública, sin código: para leer nunca ha hecho falta ningún
+     nivel ni unirse a nada -solo para editar hace falta el código de
+     administrador o editor de ese idioma-. */
+  async function rezarPublicoEspacioView(slugOrId) {
+    const myGen = navGen;
+    const cacheKey = 'liturgia.publico.cache.' + slugOrId;
+    let data;
+    try {
+      data = await Community.spaces.publicoEspacio(slugOrId);
+      localStorage.setItem(cacheKey, JSON.stringify(data));
+    } catch (e) {
+      try { data = JSON.parse(localStorage.getItem(cacheKey) || 'null'); } catch (e2) { data = null; }
+      if (data) toast('Sin conexión: mostrando la última copia guardada.');
+    }
+    if (myGen !== navGen) return;
+    if (!data) { view.innerHTML = errBox(new Error('No se pudo cargar (sin conexión y sin copia previa).')); return; }
+    let html = `<section class="day-hero misal-hero">
+      <div class="now-label">Reza con nosotros</div>
+      <h1>${Liturgy.esc(data.name)}</h1>
+    </section>`;
+    html += `<div class="btn-row"><a class="btn" href="#hoy">&#8592; Hoy</a></div>`;
+    if (!data.offices.length) {
+      html += `<div class="note-box">Todavía no hay nada publicado aquí.</div>`;
+    } else {
+      for (const o of data.offices) {
+        html += `<a class="hour-card" href="#rezar/${encodeURIComponent(slugOrId)}/${o.id}">
+          <div class="hour-card-head"><span class="hour-name">${Liturgy.esc(o.nombre)}</span></div>
+        </a>`;
+      }
+    }
+    view.innerHTML = html;
+  }
+
+  async function rezarPublicoOficioView(slugOrId, officeId) {
+    const cacheKey = 'liturgia.publico.oficio.' + slugOrId + '.' + officeId;
+    let office;
+    try {
+      office = await Community.spaces.publicoOficio(slugOrId, officeId);
+      localStorage.setItem(cacheKey, JSON.stringify(office));
+    } catch (e) {
+      try { office = JSON.parse(localStorage.getItem(cacheKey) || 'null'); } catch (e2) { office = null; }
+      if (office) toast('Sin conexión: mostrando la última copia guardada.');
+    }
+    if (!office) { view.innerHTML = errBox(new Error('No se pudo cargar este oficio (sin conexión y sin copia previa).')); return; }
+    let html = `<div class="prayer-toolbar">
+      <button class="icon-btn" onclick="location.hash='#rezar/${encodeURIComponent(slugOrId)}'" aria-label="Volver">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20v-2z"/></svg>
+      </button>
+      <div class="tt"><h1>${Liturgy.esc(office.nombre)}</h1><div class="sub">${fmtDate(currentDate)}</div></div>
+    </div>`;
+    html += `<div class="btn-row"><button type="button" class="btn" id="btn-modo-coro">&#128225; Modo coro</button></div>`;
+    html += customOfficeHtml(office);
+    view.innerHTML = html;
+    const btnCoro = view.querySelector('#btn-modo-coro');
+    if (btnCoro) btnCoro.addEventListener('click', () => entrarModoCoro(office));
+    asAppend();
+    attachFavStars();
+    enhancePrayerText();
+    attachAudioNotes();
+  }
+
   async function comunidadOficiosView() {
     const myGen = navGen;
     let html = `<section class="day-hero misal-hero">
       <div class="now-label">Comunidad</div>
       <h1>Mi comunidad</h1>
-      <div class="date-line">oficios compartidos, con administrador y versiones</div>
+      <div class="date-line">oficios compartidos entre idiomas y comunidades</div>
     </section>`;
     html += `<div class="btn-row"><a class="btn" href="#hoy">&#8592; Hoy</a></div>`;
+    html += `<div class="section-title">Reza en tu idioma</div>`;
+    html += `<div id="com-publico"><div class="note-box">Cargando...</div></div>`;
+    html += `<div class="section-title">Para quien administra un idioma</div>`;
     html += `<div class="card">
-      <p class="text">Crea un espacio para tu comunidad (monasterio, parroquia, grupo de oración) y comparte oficios que todos recéis iguales, con quien decidas como administrador. Es un espacio aparte: no sustituye tu rezo diario ni tus oficios personales.</p>
+      <p class="text">Para leer nunca hace falta código ni unirse a nada: lo de arriba está abierto a cualquiera. El código de acceso es solo para quien administra o edita los oficios de un idioma o comunidad.</p>
     </div>`;
     html += `<div class="card">
-      <div class="rubric">Crear una comunidad</div>
-      <input type="text" id="com-crear-nombre" class="input-line" placeholder="Nombre del espacio (ej. Monasterio de...)">
+      <div class="rubric">Crear un espacio nuevo</div>
+      <input type="text" id="com-crear-nombre" class="input-line" placeholder="Nombre (ej. Español, English, Monasterio de...)">
       <input type="text" id="com-crear-nick" class="input-line" placeholder="Tu nombre o apodo" style="margin-top:8px">
+      <input type="email" id="com-crear-email" class="input-line" placeholder="Tu correo (opcional, para recibir avisos)" style="margin-top:8px">
       <div class="btn-row"><button type="button" class="btn primary" id="com-crear-btn">Crear</button></div>
     </div>`;
     html += `<div class="card">
-      <div class="rubric">Unirme con un código</div>
+      <div class="rubric">Entrar como administrador o editor</div>
       <input type="text" id="com-unir-codigo" class="input-line" placeholder="Código de acceso">
       <input type="text" id="com-unir-nick" class="input-line" placeholder="Tu nombre o apodo" style="margin-top:8px">
-      <div class="btn-row"><button type="button" class="btn primary" id="com-unir-btn">Unirme</button></div>
+      <input type="email" id="com-unir-email" class="input-line" placeholder="Tu correo (opcional, para recibir avisos)" style="margin-top:8px">
+      <div class="btn-row"><button type="button" class="btn primary" id="com-unir-btn">Entrar</button></div>
     </div>`;
     html += `<div class="section-title">Mis espacios</div>`;
     html += `<div id="com-lista"><div class="note-box">Cargando...</div></div>`;
     view.innerHTML = html;
 
+    Community.spaces.publico().then((r) => {
+      if (myGen !== navGen) return;
+      const cont = view.querySelector('#com-publico');
+      if (!cont) return;
+      if (!r.spaces.length) { cont.innerHTML = '<div class="note-box">Todavía no hay ningún idioma publicado.</div>'; return; }
+      cont.innerHTML = r.spaces.map((s) => `<a class="hour-card" href="#rezar/${encodeURIComponent(s.slug || s.id)}">
+        <div class="hour-card-head"><span class="hour-name">${Liturgy.esc(s.name)}</span></div>
+      </a>`).join('');
+    }).catch(() => {
+      if (myGen !== navGen) return;
+      const cont = view.querySelector('#com-publico');
+      if (cont) cont.innerHTML = '<div class="note-box">Sin conexión con el servidor.</div>';
+    });
+
     view.querySelector('#com-crear-btn').addEventListener('click', async () => {
       const nombre = view.querySelector('#com-crear-nombre').value.trim();
       const nick = view.querySelector('#com-crear-nick').value.trim();
+      const email = view.querySelector('#com-crear-email').value.trim();
       if (!nombre || nick.length < 2) { toast('Pon el nombre del espacio y tu apodo.'); return; }
       try {
-        const r = await Community.spaces.create(nick, nombre);
+        const r = await Community.spaces.create(nick, nombre, email);
         toast('Comunidad creada. Guarda bien los códigos que verás ahora.');
         location.hash = '#comunidad-oficios/' + r.id;
       } catch (e) { toast(e.message || 'No se pudo crear la comunidad.'); }
@@ -1196,9 +1369,10 @@
     view.querySelector('#com-unir-btn').addEventListener('click', async () => {
       const codigo = view.querySelector('#com-unir-codigo').value.trim();
       const nick = view.querySelector('#com-unir-nick').value.trim();
+      const email = view.querySelector('#com-unir-email').value.trim();
       if (!codigo || nick.length < 2) { toast('Pon el código y tu apodo.'); return; }
       try {
-        const r = await Community.spaces.join(nick, codigo);
+        const r = await Community.spaces.join(nick, codigo, email);
         toast('Te has unido a «' + r.name + '».');
         location.hash = '#comunidad-oficios/' + r.id;
       } catch (e) { toast(e.message || 'No se pudo unir a esa comunidad.'); }
@@ -1250,10 +1424,37 @@
         <div class="btn-row"><button type="button" class="btn" data-copy-code="${info.codeMember}">Miembro: ${info.codeMember}</button></div>
         <div class="btn-row"><button type="button" class="btn" data-copy-code="${info.codeGuest}">Invitado (solo lectura): ${info.codeGuest}</button></div>
         <div class="btn-row"><a class="btn" href="#comunidad-oficios/${spaceId}/miembros">Gestionar miembros y roles</a></div>
+      </div>
+      <div class="card">
+        <div class="rubric">Dirección para leer, sin código</div>
+        <p class="comm-sub">Cualquiera con este enlace lee lo publicado aquí, sin unirse a nada. Es la dirección que reparte entre quienes solo van a rezar.</p>
+        ${info.slug ? `<p class="text"><a href="#rezar/${Liturgy.esc(info.slug)}">#rezar/${Liturgy.esc(info.slug)}</a></p>` : `<p class="comm-sub">Todavía no tiene una dirección propia: por ahora se lee con #rezar/${spaceId}.</p>`}
+        <input type="text" id="com-slug" class="input-line" placeholder="ej. es, en, it, la" value="${Liturgy.esc(info.slug || '')}">
+        <div class="btn-row"><button type="button" class="btn" id="com-slug-btn">${info.slug ? 'Cambiar dirección' : 'Fijar dirección'}</button></div>
+      </div>`;
+    }
+    if (canEditHere) {
+      html += `<div class="card">
+        <div class="rubric">Piezas comunes</div>
+        <p class="comm-sub">Lo que se repite en muchos oficios (Padre nuestro, Gloria, antífonas fijas...): escríbelo una vez aquí y corregirlo lo corrige en todos los oficios que lo usen.</p>
+        <div class="btn-row"><a class="btn" href="#comunidad-oficios/${spaceId}/piezas">Gestionar piezas comunes</a></div>
+      </div>`;
+    }
+    if (info.role === 'admin') {
+      html += `<div class="card">
+        <div class="rubric">Avisar a los miembros por correo</div>
+        <p class="comm-sub">Solo llega a quien haya dejado su correo al unirse.</p>
+        <input type="text" id="com-notify-asunto" class="input-line" placeholder="Asunto">
+        <textarea id="com-notify-mensaje" class="input-line" placeholder="Mensaje..." style="margin-top:8px;min-height:80px"></textarea>
+        <div class="btn-row"><button type="button" class="btn primary" id="com-notify-btn">Enviar aviso</button></div>
       </div>`;
     }
     if (canEditHere) html += `<div class="btn-row"><a class="btn primary" href="#comunidad-oficios/${spaceId}/nuevo">&#10011; Crear oficio</a></div>`;
     html += `<div class="section-title">Oficios</div>`;
+    if (canEditHere && offs.offices.length) {
+      const nPub = offs.offices.filter((o) => o.estado === 'publicado').length;
+      html += `<div class="comm-sub" style="margin:-6px 0 10px">${nPub} publicado${nPub === 1 ? '' : 's'} · ${offs.offices.length - nPub} en borrador · ${offs.offices.length} en total</div>`;
+    }
     if (!offs.offices.length) {
       html += `<div class="note-box">Todavía no hay oficios ${canEditHere ? 'creados' : 'publicados'} en esta comunidad.</div>`;
     } else {
@@ -1275,10 +1476,31 @@
     }
     view.innerHTML = html;
 
+    const slugBtn = view.querySelector('#com-slug-btn');
+    if (slugBtn) slugBtn.addEventListener('click', async () => {
+      const slug = view.querySelector('#com-slug').value.trim();
+      if (!slug) { toast('Escribe una dirección (ej. "es", "en").'); return; }
+      try {
+        await Community.spaces.setSlug(spaceId, slug);
+        toast('Dirección guardada.');
+        comunidadEspacioView(spaceId);
+      } catch (e) { toast(e.message || 'No se pudo guardar esa dirección.'); }
+    });
     view.querySelectorAll('[data-copy-code]').forEach((b) => {
       b.addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(b.dataset.copyCode); toast('Código copiado.'); }
         catch (e) { prompt('Copia este código:', b.dataset.copyCode); }
+      });
+    });
+    view.querySelectorAll('[data-duplicar]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const vaciar = b.dataset.duplicarVaciar === '1';
+        b.disabled = true;
+        try {
+          const r = await Community.spaces.duplicar(spaceId, +b.dataset.duplicar, null, vaciar);
+          toast(vaciar ? 'Esquema creado como borrador.' : 'Oficio duplicado como borrador.');
+          location.hash = '#comunidad-oficios/' + spaceId + '/editar/' + r.id;
+        } catch (e) { toast(e.message || 'No se pudo duplicar.'); b.disabled = false; }
       });
     });
     view.querySelectorAll('[data-toggle-estado]').forEach((b) => {
@@ -1291,6 +1513,19 @@
         } catch (e) { toast(e.message || 'No se pudo cambiar el estado.'); }
       });
     });
+    const notifyBtn = view.querySelector('#com-notify-btn');
+    if (notifyBtn) notifyBtn.addEventListener('click', async () => {
+      const asunto = view.querySelector('#com-notify-asunto').value.trim();
+      const mensaje = view.querySelector('#com-notify-mensaje').value.trim();
+      if (!mensaje) { toast('Escribe el mensaje que quieres enviar.'); return; }
+      notifyBtn.disabled = true; notifyBtn.textContent = 'Enviando...';
+      try {
+        const r = await Community.spaces.notify(spaceId, asunto, mensaje);
+        toast(`Aviso enviado a ${r.enviados} ${r.enviados === 1 ? 'persona' : 'personas'}${r.fallidos ? ' (' + r.fallidos + ' fallidos)' : ''}.`);
+        view.querySelector('#com-notify-mensaje').value = '';
+      } catch (e) { toast(e.message || 'No se pudo enviar el aviso.'); }
+      finally { notifyBtn.disabled = false; notifyBtn.textContent = 'Enviar aviso'; }
+    });
   }
 
   async function comunidadOficioEditView(spaceId, officeId) {
@@ -1300,18 +1535,32 @@
       try { office = await Community.spaces.office(spaceId, officeId); }
       catch (e) { view.innerHTML = errBox(new Error(e.message || 'No se pudo cargar ese oficio.')); return; }
     }
+    let baseVersion = isNew ? null : office.version;
     let piezas = (office.piezas || []).map((p) => Object.assign({}, p));
+    let banco = [];
+    try { banco = (await Community.spaces.piezas(spaceId)).piezas; } catch (e) { /* sin banco, se sigue sin él */ }
 
     function piezaRow(p, i, total) {
       const tipoOpts = CustomOffice.PIEZA_TIPOS.map((t) => `<option value="${t.id}" ${p.tipo === t.id ? 'selected' : ''}>${t.label}</option>`).join('');
       const tipoMeta = CustomOffice.PIEZA_TIPOS.find((t) => t.id === p.tipo);
       const needsRef = !!(tipoMeta && tipoMeta.needsRef);
+      const reorder = `<button type="button" class="btn small pieza-up" title="Subir" ${i === 0 ? 'disabled' : ''}>&#8593;</button>
+          <button type="button" class="btn small pieza-down" title="Bajar" ${i === total - 1 ? 'disabled' : ''}>&#8595;</button>
+          <button type="button" class="btn small pieza-del" title="Quitar">&#10005;</button>`;
+      if (p.bancoId) {
+        return `<div class="card oficio-pieza" data-i="${i}">
+          <div class="btn-row" style="margin-bottom:8px">
+            <span class="hour-ant">&#128218; Del banco: ${Liturgy.esc(p.etiqueta || '')}</span>
+            ${reorder}
+          </div>
+          <p class="comm-sub">${Liturgy.esc(p.texto || '')}</p>
+          <div class="btn-row"><button type="button" class="btn pieza-desvincular">Desvincular (pasar a texto propio de este oficio)</button></div>
+        </div>`;
+      }
       return `<div class="card oficio-pieza" data-i="${i}">
         <div class="btn-row" style="margin-bottom:8px">
           <select class="date-val pieza-tipo">${tipoOpts}</select>
-          <button type="button" class="btn small pieza-up" title="Subir" ${i === 0 ? 'disabled' : ''}>&#8593;</button>
-          <button type="button" class="btn small pieza-down" title="Bajar" ${i === total - 1 ? 'disabled' : ''}>&#8595;</button>
-          <button type="button" class="btn small pieza-del" title="Quitar">&#10005;</button>
+          ${reorder}
         </div>
         ${p.tipo === 'otro' ? `<input type="text" class="pieza-tipolabel input-line" placeholder="Nombre de esta pieza" value="${Liturgy.esc(p.tipoLabel || '')}">` : ''}
         ${needsRef ? `<input type="text" class="pieza-ref input-line" placeholder="Referencia" value="${Liturgy.esc(p.ref || '')}">` : ''}
@@ -1321,17 +1570,24 @@
     function wirePiezas() {
       view.querySelectorAll('.oficio-pieza').forEach((el) => {
         const i = parseInt(el.dataset.i, 10);
-        el.querySelector('.pieza-tipo').addEventListener('change', (e) => { piezas[i].tipo = e.target.value; renderPiezas(); });
-        const refEl = el.querySelector('.pieza-ref');
-        if (refEl) refEl.addEventListener('input', (e) => { piezas[i].ref = e.target.value; });
-        const tipoLabelEl = el.querySelector('.pieza-tipolabel');
-        if (tipoLabelEl) tipoLabelEl.addEventListener('input', (e) => { piezas[i].tipoLabel = e.target.value; });
-        el.querySelector('.pieza-texto').addEventListener('input', (e) => { piezas[i].texto = e.target.value; });
-        el.querySelector('.pieza-del').addEventListener('click', () => { piezas.splice(i, 1); renderPiezas(); });
         const up = el.querySelector('.pieza-up');
         if (up) up.addEventListener('click', () => { if (i > 0) { const t = piezas[i - 1]; piezas[i - 1] = piezas[i]; piezas[i] = t; renderPiezas(); } });
         const down = el.querySelector('.pieza-down');
         if (down) down.addEventListener('click', () => { if (i < piezas.length - 1) { const t = piezas[i + 1]; piezas[i + 1] = piezas[i]; piezas[i] = t; renderPiezas(); } });
+        el.querySelector('.pieza-del').addEventListener('click', () => { piezas.splice(i, 1); renderPiezas(); });
+        const desvincular = el.querySelector('.pieza-desvincular');
+        if (desvincular) desvincular.addEventListener('click', () => {
+          piezas[i] = { tipo: piezas[i].tipo || 'texto', texto: piezas[i].texto || '' };
+          renderPiezas();
+        });
+        const tipoSel = el.querySelector('.pieza-tipo');
+        if (tipoSel) tipoSel.addEventListener('change', (e) => { piezas[i].tipo = e.target.value; renderPiezas(); });
+        const refEl = el.querySelector('.pieza-ref');
+        if (refEl) refEl.addEventListener('input', (e) => { piezas[i].ref = e.target.value; });
+        const tipoLabelEl = el.querySelector('.pieza-tipolabel');
+        if (tipoLabelEl) tipoLabelEl.addEventListener('input', (e) => { piezas[i].tipoLabel = e.target.value; });
+        const textoEl = el.querySelector('.pieza-texto');
+        if (textoEl) textoEl.addEventListener('input', (e) => { piezas[i].texto = e.target.value; });
       });
     }
     function renderPiezas() {
@@ -1364,13 +1620,24 @@
     </div>
     <div class="section-title">Piezas del oficio</div>
     <div id="oficio-piezas"></div>
-    <div class="btn-row"><button type="button" class="btn" id="oficio-add-pieza">&#10011; Añadir pieza</button></div>
+    <div class="btn-row">
+      <button type="button" class="btn" id="oficio-add-pieza">&#10011; Añadir pieza</button>
+      ${banco.length ? `<select class="date-val" id="oficio-banco-sel">${banco.map((b) => `<option value="${b.id}">&#128218; ${Liturgy.esc(b.etiqueta)}</option>`).join('')}</select><button type="button" class="btn" id="oficio-banco-add">Insertar del banco</button>` : ''}
+    </div>
     <div class="btn-row"><button type="button" class="btn primary" id="oficio-guardar">${isNew ? 'Crear oficio' : 'Guardar cambios (nueva versión)'}</button></div>`;
 
     view.innerHTML = html;
     renderPiezas();
 
     view.querySelector('#oficio-add-pieza').addEventListener('click', () => { piezas.push({ tipo: 'texto', texto: '' }); renderPiezas(); });
+    const bancoAddBtn = view.querySelector('#oficio-banco-add');
+    if (bancoAddBtn) bancoAddBtn.addEventListener('click', () => {
+      const id = view.querySelector('#oficio-banco-sel').value;
+      const b = banco.find((x) => String(x.id) === id);
+      if (!b) return;
+      piezas.push({ tipo: b.tipo, bancoId: b.id, etiqueta: b.etiqueta, texto: b.texto });
+      renderPiezas();
+    });
     view.querySelector('#oficio-cargar-plantilla').addEventListener('click', () => {
       const hourId = view.querySelector('#oficio-plantilla').value;
       if (piezas.length && !confirm('¿Añadir los huecos de esa hora al final?')) return;
@@ -1394,11 +1661,22 @@
       if (!nombre) { toast('Ponle un nombre al oficio.'); return; }
       try {
         const payload = { nombre, piezas };
-        if (!isNew) payload.id = officeId;
+        if (!isNew) { payload.id = officeId; payload.baseVersion = baseVersion; }
         const r = await Community.spaces.saveOffice(spaceId, payload);
         toast(isNew ? 'Oficio creado como borrador.' : 'Cambios guardados (v' + r.version + ').');
         location.hash = '#comunidad-oficios/' + spaceId;
-      } catch (e) { toast(e.message || 'No se pudo guardar.'); }
+      } catch (e) {
+        if (e.status === 409 && e.data && e.data.actual) {
+          toast('Otra persona ha actualizado este oficio mientras lo editabas. Se ha cargado lo último: repite tus cambios sobre esto.');
+          office = e.data.actual;
+          baseVersion = office.version;
+          piezas = (office.piezas || []).map((p) => Object.assign({}, p));
+          view.querySelector('#oficio-nombre').value = office.nombre;
+          renderPiezas();
+          return;
+        }
+        toast(e.message || 'No se pudo guardar.');
+      }
     });
   }
 
@@ -1494,6 +1772,107 @@
         } catch (e) { toast(e.message || 'No se pudo cambiar el rol.'); comunidadMiembrosView(spaceId); }
       });
     });
+  }
+
+  /* Banco de piezas comunes de un espacio: lo que se repite en muchos
+     oficios (Padre nuestro, Gloria, antífonas fijas...) se escribe una sola
+     vez aquí; los oficios la referencian y siempre leen el texto vigente. */
+  async function comunidadPiezasView(spaceId) {
+    const myGen = navGen;
+    let info, data;
+    try {
+      info = await Community.spaces.get(spaceId);
+      data = await Community.spaces.piezas(spaceId);
+    } catch (e) {
+      if (myGen !== navGen) return;
+      view.innerHTML = errBox(new Error(e.message || 'No se pudo cargar el banco de piezas.'));
+      return;
+    }
+    if (myGen !== navGen) return;
+    const canEditHere = info.role === 'admin' || info.role === 'editor';
+    let editingId = null;
+
+    function tipoLabel(id) { const t = CustomOffice.PIEZA_TIPOS.find((x) => x.id === id); return t ? t.label : id; }
+
+    function render() {
+      let html = `<div class="prayer-toolbar">
+        <button class="icon-btn" onclick="location.hash='#comunidad-oficios/${spaceId}'" aria-label="Volver">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20v-2z"/></svg>
+        </button>
+        <div class="tt"><h1>Piezas comunes</h1></div>
+      </div>`;
+      html += `<div class="card"><p class="text">Lo que se repite en muchos oficios: escríbelo aquí una sola vez y úsalo desde el editor de cada oficio, con el botón "Insertar del banco". Corregirlo aquí lo corrige en todos los oficios que lo usen.</p></div>`;
+      if (canEditHere) {
+        html += `<div class="card">
+          <div class="rubric" id="piz-form-title">Nueva pieza</div>
+          <input type="text" id="piz-etiqueta" class="input-line" placeholder="Etiqueta (ej. Padre nuestro)">
+          <select class="date-val" id="piz-tipo" style="margin-top:8px">${CustomOffice.PIEZA_TIPOS.map((t) => `<option value="${t.id}">${t.label}</option>`).join('')}</select>
+          <textarea id="piz-texto" class="input-line" placeholder="Texto..." style="margin-top:8px;min-height:90px"></textarea>
+          <div class="btn-row"><button type="button" class="btn primary" id="piz-guardar">Guardar</button><button type="button" class="btn" id="piz-cancelar" hidden>Cancelar edición</button></div>
+        </div>`;
+      }
+      if (!data.piezas.length) {
+        html += `<div class="note-box">Todavía no hay piezas en el banco.</div>`;
+      } else {
+        for (const p of data.piezas) {
+          html += `<div class="hour-card">
+            <div class="hour-card-head"><span class="hour-name">${Liturgy.esc(p.etiqueta)}</span></div>
+            <div class="hour-card-body"><div class="hour-ant">${tipoLabel(p.tipo)}</div><div class="comm-sub">${Liturgy.esc((p.texto || '').slice(0, 140))}${(p.texto || '').length > 140 ? '…' : ''}</div></div>
+            ${canEditHere ? `<div class="btn-row" style="margin-bottom:0;margin-top:8px">
+              <button type="button" class="btn" data-editar-pieza="${p.id}">Editar</button>
+              <button type="button" class="btn" data-borrar-pieza="${p.id}">Borrar</button>
+            </div>` : ''}
+          </div>`;
+        }
+      }
+      view.innerHTML = html;
+      wire();
+    }
+
+    function wire() {
+      const guardarBtn = view.querySelector('#piz-guardar');
+      if (guardarBtn) guardarBtn.addEventListener('click', async () => {
+        const etiqueta = view.querySelector('#piz-etiqueta').value.trim();
+        const tipo = view.querySelector('#piz-tipo').value;
+        const texto = view.querySelector('#piz-texto').value.trim();
+        if (!etiqueta || !texto) { toast('Ponle una etiqueta y un texto.'); return; }
+        try {
+          const r = await Community.spaces.savePieza(spaceId, { id: editingId, etiqueta, tipo, texto });
+          toast(editingId ? 'Pieza actualizada.' : 'Pieza añadida al banco.');
+          data = await Community.spaces.piezas(spaceId);
+          editingId = null;
+          render();
+        } catch (e) { toast(e.message || 'No se pudo guardar la pieza.'); }
+      });
+      const cancelarBtn = view.querySelector('#piz-cancelar');
+      if (cancelarBtn) cancelarBtn.addEventListener('click', () => { editingId = null; render(); });
+      view.querySelectorAll('[data-editar-pieza]').forEach((b) => {
+        b.addEventListener('click', () => {
+          const p = data.piezas.find((x) => String(x.id) === b.dataset.editarPieza);
+          if (!p) return;
+          editingId = p.id;
+          render();
+          view.querySelector('#piz-form-title').textContent = 'Editar pieza';
+          view.querySelector('#piz-etiqueta').value = p.etiqueta;
+          view.querySelector('#piz-tipo').value = p.tipo;
+          view.querySelector('#piz-texto').value = p.texto;
+          view.querySelector('#piz-cancelar').hidden = false;
+          view.querySelector('#piz-etiqueta').scrollIntoView({ block: 'center' });
+        });
+      });
+      view.querySelectorAll('[data-borrar-pieza]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          if (!confirm('¿Borrar esta pieza del banco? Los oficios que la usen se quedarán sin ese texto.')) return;
+          try {
+            await Community.spaces.borrarPieza(spaceId, b.dataset.borrarPieza);
+            data = await Community.spaces.piezas(spaceId);
+            render();
+          } catch (e) { toast(e.message || 'No se pudo borrar.'); }
+        });
+      });
+    }
+
+    render();
   }
 
   async function oficiosView() {
@@ -3062,6 +3441,14 @@
       </div>
 
       <div class="card">
+        <div class="lbl" style="font-weight:700">Voz de lectura</div>
+        <div class="desc" style="color:var(--ink-soft);font-family:var(--sans);font-size:.85rem;margin:6px 0 10px">
+          De las voces en español que tiene tu dispositivo, elige la que suene más natural. La calidad depende del propio dispositivo, no de la app.
+        </div>
+        <div id="voice-picker">Comprobando voces disponibles…</div>
+      </div>
+
+      <div class="card">
         <div class="lbl" style="font-weight:700">Recordatorios</div>
         <div class="desc" style="color:var(--ink-soft);font-family:var(--sans);font-size:.85rem;margin:6px 0 10px">
           ${window.Capacitor ? 'Avisos discretos en el móvil, sin necesidad de conexión.' : 'Solo disponibles en la app instalada (no en el navegador).'}
@@ -3122,6 +3509,7 @@
 
     wireReminders();
     checkOfflineStatus();
+    renderVoicePicker();
   }
 
   /* ------------------------------ Recordatorios ------------------------------ */
