@@ -3,7 +3,7 @@
    Precarga la app y la librería de rezo (una sola vez).
    ============================================================ */
 
-const CACHE = 'liturgia-horas-v53';
+const CACHE = 'liturgia-horas-v54';
 const CORE = [
   './',
   './index.html',
@@ -25,6 +25,7 @@ const CORE = [
   './lib/oraciones.js',
   './lib/liturgy.js',
   './lib/biblia.js',
+  './lib/community.js',
   './vendor/breviarium.umd.js',
   './manifest.webmanifest',
   './icons/icon.svg',
@@ -32,16 +33,26 @@ const CORE = [
   './icons/icon-512.png'
 ];
 
-// cache.addAll() es todo o nada: si UN solo archivo falla (una carga a
-// medias en el servidor, una petición que llega en mal momento...), toda la
-// precarga se descarta y el service worker nuevo se queda sin instalar -el
-// viejo sigue sirviendo archivos antiguos indefinidamente-. Cada archivo se
-// guarda por separado para que uno fallido no arrastre a los demás.
+// cache.add(url) reutiliza la caché HTTP normal del navegador: si un
+// archivo ya se sirvió antes sin cabeceras que digan "no lo guardes", una
+// instalación nueva del service worker puede acabar copiando en la caché
+// NUEVA el mismo contenido VIEJO, sin tocar la red de verdad -justo lo que
+// esto necesita evitar, al ser la propia forma de actualizar la app-. Por
+// eso se pide cada archivo con cache:'reload' (red siempre, nunca la
+// caché HTTP) y se guarda el resultado a mano.
+// Además, cache.addAll() es todo o nada: si UN solo archivo falla (una
+// carga a medias en el servidor, una petición que llega en mal momento...),
+// toda la precarga se descarta y el service worker nuevo se queda sin
+// instalar -el viejo sigue sirviendo archivos antiguos indefinidamente-.
+// Cada archivo se guarda por separado para que uno fallido no arrastre a
+// los demás.
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE)
       .then((cache) => Promise.all(CORE.map((url) =>
-        cache.add(url).catch((err) => console.warn('No se pudo precargar', url, err))
+        fetch(url, { cache: 'reload' })
+          .then((res) => { if (res && res.ok) return cache.put(url, res); })
+          .catch((err) => console.warn('No se pudo precargar', url, err))
       )))
       .then(() => self.skipWaiting())
   );
