@@ -132,12 +132,26 @@
     document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.fs = s.fontSize || 'M';
     $('#meta-theme').setAttribute('content', theme === 'dark' ? '#17151c' : '#f6f2e9');
+    // El claro/oscuro de "--accent-ink" depende del tema: si se cambia de
+    // tema sin recargar la página, hay que recalcularlo con el mismo color
+    // litúrgico de hoy, no dejar el que tocaba para el tema anterior.
+    if (currentAccentHex) setAccent(currentAccentHex);
   }
 
+  // El color litúrgico del día (rojo, verde, morado…) se usa también para
+  // el texto de "--accent-ink" sobre fondos oscurecidos con ese mismo
+  // color (portada, tarjetas "hecho"…): oscurecerlo un 35% -lo que hacía
+  // falta en tema claro- lo deja casi ilegible en tema oscuro, porque el
+  // fondo YA es oscuro y del mismo color. En tema oscuro se aclara en vez
+  // de oscurecer (medido con rojo: de un contraste de 1,6:1 -casi
+  // invisible- a más de 7:1).
+  let currentAccentHex = null;
   function setAccent(hex) {
     if (!hex) return;
+    currentAccentHex = hex;
     document.documentElement.style.setProperty('--accent', hex);
-    document.documentElement.style.setProperty('--accent-ink', shade(hex, -35));
+    const dark = document.documentElement.dataset.theme === 'dark';
+    document.documentElement.style.setProperty('--accent-ink', shade(hex, dark ? 55 : -35));
   }
 
   function shade(hex, pct) {
@@ -257,11 +271,6 @@
       html += homeHourCards(recommended);
       html += `<div class="section-title">Rezo del día</div>`;
       html += rezoDelDiaGrid(currentDate);
-      html += `<div class="btn-row">
-        <a class="btn" href="#lecturas">Lecturas del día</a>
-        <a class="btn" href="#biblia">Biblia</a>
-        <a class="btn" href="#comunidad">Comunidad</a>
-      </div>`;
 
       view.innerHTML = html;
       attachInstallBanner();
@@ -867,11 +876,12 @@
   }
 
   function rezoDelDiaGrid(fecha) {
-    const R = Oraciones.ROSARIO;
-    const serie = R.serieDelDia(fecha);
+    // Rosario y Coronilla ya viven dentro de Oraciones (sección
+    // "Devociones"): no hace falta repetirlos aquí también.
     const cards = [
-      { href: '#rosario', key: 'rosario_' + serie, icon: '&#128255;', titulo: 'Rosario', sub: 'Misterios ' + R.SERIE_NOMBRE[serie] },
-      { href: '#coronilla', key: 'coronilla', icon: '&#128591;', titulo: 'Coronilla de la Divina Misericordia', sub: 'La hora de la misericordia' },
+      { href: '#lecturas', key: null, icon: '&#128214;', titulo: 'Lecturas del día', sub: 'La Misa del día' },
+      { href: '#biblia', key: null, icon: '&#128213;', titulo: 'Biblia', sub: 'Escritura y lectura' },
+      { href: '#comunidad', key: null, icon: '&#128101;', titulo: 'Comunidad', sub: 'Reza con otros' },
       { href: '#angelus', key: 'angelus', icon: '&#128330;', titulo: 'Ángelus', sub: 'Las 12 de la mañana' },
       { href: '#oraciones', key: null, icon: '&#10024;', titulo: 'Oraciones', sub: 'La oración de cada día' }
     ];
@@ -3803,6 +3813,77 @@
     });
   }
 
+  /* ------------------------- Copia en tu nube ------------------------- */
+  async function renderCloudCard() {
+    const slot = $('#cloud-status');
+    if (!slot || !window.CloudBackup) return;
+    const st = await CloudBackup.status();
+    if (!st.supported) {
+      slot.innerHTML = '<p class="comm-sub">Tu navegador no puede elegir una carpeta del disco (funciona en Chrome o Edge de escritorio).</p>';
+      return;
+    }
+    if (!st.connected) {
+      slot.innerHTML = '<div class="btn-row"><button type="button" class="btn primary" id="btn-cloud-connect">Elegir carpeta</button></div>';
+      const b = $('#btn-cloud-connect');
+      if (b) b.addEventListener('click', async () => {
+        b.disabled = true; b.textContent = 'Abriendo…';
+        const r = await CloudBackup.connect();
+        if (r.ok) { toast('Carpeta conectada: <b>' + Liturgy.esc(r.name) + '</b>.'); await CloudBackup.backupNow(true); }
+        else if (!r.cancelled) toast(r.error || 'No se pudo conectar.');
+        renderCloudCard();
+      });
+      return;
+    }
+    if (!st.granted) {
+      slot.innerHTML = `<p class="comm-sub">Conectado a <b>${Liturgy.esc(st.name)}</b>, pero hay que confirmar el permiso otra vez.</p>
+        <div class="btn-row">
+          <button type="button" class="btn primary" id="btn-cloud-reconnect">Reconectar</button>
+          <button type="button" class="btn" id="btn-cloud-disconnect">Desconectar</button>
+        </div>`;
+      wireCloudButtons();
+      return;
+    }
+    slot.innerHTML = `<p class="comm-sub">Conectado a <b>${Liturgy.esc(st.name)}</b>.</p>
+      <div class="btn-row">
+        <button type="button" class="btn primary" id="btn-cloud-backup">Guardar copia ahora</button>
+        <button type="button" class="btn" id="btn-cloud-restore" title="Solo añade lo que falte aquí; no borra ni sobrescribe nada">Restaurar desde la carpeta</button>
+        <button type="button" class="btn" id="btn-cloud-disconnect">Desconectar</button>
+      </div>
+      <div id="cloud-msg" style="font-family:var(--sans);font-size:.85rem;color:var(--ink-soft);margin-top:6px"></div>`;
+    wireCloudButtons();
+  }
+
+  function wireCloudButtons() {
+    const msg = (t) => { const el = $('#cloud-msg'); if (el) el.textContent = t; };
+    const reconnect = $('#btn-cloud-reconnect');
+    if (reconnect) reconnect.addEventListener('click', async () => {
+      const r = await CloudBackup.backupNow(true);
+      toast(r.ok ? 'Reconectado y copia guardada.' : 'No se pudo reconectar.');
+      renderCloudCard();
+    });
+    const backup = $('#btn-cloud-backup');
+    if (backup) backup.addEventListener('click', async () => {
+      backup.disabled = true; backup.textContent = 'Guardando…';
+      const r = await CloudBackup.backupNow(true);
+      msg(r.ok ? 'Copia guardada.' : 'No se pudo guardar.');
+      backup.disabled = false; backup.textContent = 'Guardar copia ahora';
+    });
+    const restore = $('#btn-cloud-restore');
+    if (restore) restore.addEventListener('click', async () => {
+      restore.disabled = true; restore.textContent = 'Restaurando…';
+      const r = await CloudBackup.restoreFromFolder(true);
+      if (r.ok) msg(`Traído de la carpeta: ${r.nuevos} elemento(s) nuevo(s), ${r.audios} grabación(es).`);
+      else msg('No se pudo restaurar' + (r.error === 'sin-copia-todavia' ? ': esa carpeta todavía no tiene ninguna copia guardada.' : '.'));
+      restore.disabled = false; restore.textContent = 'Restaurar desde la carpeta';
+    });
+    const disconnect = $('#btn-cloud-disconnect');
+    if (disconnect) disconnect.addEventListener('click', async () => {
+      if (!confirm('¿Desconectar esta carpeta? No se borra nada de lo que ya haya en ella ni en este dispositivo.')) return;
+      await CloudBackup.disconnect();
+      renderCloudCard();
+    });
+  }
+
   function settingsView() {
     const s = Store.get();
     const fs = { S: 'Peque\u00f1a', M: 'Normal', L: 'Grande', XL: 'Muy grande' };
@@ -3874,6 +3955,14 @@
       </div>`}
 
       <div class="card">
+        <div class="lbl" style="font-weight:700">Copia en tu nube</div>
+        <div class="desc" style="color:var(--ink-soft);font-family:var(--sans);font-size:.85rem;margin:6px 0 10px">
+          Guarda tus salmos favoritos, tus rezos y oficios personalizados y tus grabaciones de voz en una carpeta que elijas tú -normalmente la carpeta de Dropbox, Google Drive o OneDrive que ya tengas en el ordenador-. Así los tienes también en tus demás dispositivos, sin cuentas ni contraseñas: nada de esto pasa por ningún servidor nuestro.
+        </div>
+        <div id="cloud-status">Comprobando…</div>
+      </div>
+
+      <div class="card">
         <div class="lbl" style="font-weight:700">Progreso de hoy</div>
         <div class="desc" style="color:var(--ink-soft);font-family:var(--sans);font-size:.85rem;margin:6px 0 10px">
           ${Store.prayedCount(currentDate)} de ${Liturgy.HOURS.length} horas rezadas hoy.
@@ -3918,6 +4007,7 @@
     wireReminders();
     checkOfflineStatus();
     renderVoicePicker();
+    renderCloudCard();
 
     const instBtn = $('#btn-install-settings');
     if (instBtn) instBtn.addEventListener('click', async () => {
