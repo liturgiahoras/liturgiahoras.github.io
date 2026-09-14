@@ -30,12 +30,16 @@
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
 
-  // Versión web estática (GitHub Pages, ramonfandos.es...): sin servidor -> sin comunidad/presencia.
-  const GH = window.LH_GH === 1 || /^([a-z0-9-]+\.)?[a-z0-9-]+\.github\.io$/i.test(location.hostname || '');
-  // "Mi comunidad" (oficios compartidos) funciona en Render (Node) y también
-  // en ramonfandos.es (PHP+SQLite, ver router.php); en GitHub Pages no hay
-  // ningún backend disponible y se queda desactivada.
-  const SPACES_OK = !GH || window.LH_SPACES === 1;
+  // "Mi comunidad" (oficios compartidos) y "Comunidad de rezo" (presencia,
+  // intenciones, coros) son dos funciones INDEPENDIENTES, cada una con su
+  // propio interruptor explícito: cada build inyecta el flag que le
+  // corresponde (ver tools/build-*.mjs) según si lleva o no ese backend.
+  // GitHub Pages no inyecta ninguno de los dos -no ejecuta nada del lado del
+  // servidor- y ambos quedan apagados. En local (node server.js, el Node
+  // completo) las dos están encendidas sin necesidad de inyectar nada.
+  const LOCAL_DEV = /^(localhost|127\.0\.0\.1)$/i.test(location.hostname || '');
+  const SPACES_OK = window.LH_SPACES === 1 || LOCAL_DEV;
+  const PRESENCE_OK = window.LH_PRESENCE === 1 || LOCAL_DEV;
 
   // Nombre del hosting real, para los textos de privacidad: puede haber más
   // de una copia estática (GitHub Pages, ramonfandos.es) además de Render.
@@ -161,8 +165,8 @@
 
   async function route() {
     navGen++;
-    const existingAs = document.querySelector('.autoscroll');
-    if (existingAs) existingAs.remove();
+    const asBadge = document.querySelector('#as-speed');
+    if (asBadge) asBadge.classList.add('hidden');
     stopSpeak();
     const h = parseHash();
     if (h.startsWith('hora/')) return hourView(h.split('/')[1]);
@@ -185,7 +189,7 @@
     if (h === 'misal' || h === 'lecturas') return misalView();
     if (h === 'ortodoxa') return ortodoxaView();
     if (h === 'biblia') return bibliaView();
-    if (GH && h === 'comunidad') return communityStaticView();
+    if (!PRESENCE_OK && h === 'comunidad') return communityStaticView();
     if (h === 'comunidad') return communityView();
     if (h === 'lecturas') return lecturasView();
     if (h === 'ajustes') return settingsView();
@@ -289,7 +293,7 @@
   }
 
   function presenceLive() {
-    if (GH) return '';
+    if (!PRESENCE_OK) return '';
     return `<section class="now-praying" id="now-praying">
       <div class="np-count"><span id="np-total">0</span><span id="np-label">personas rezando ahora</span></div>
       <div class="np-countries" id="np-countries"></div>
@@ -316,7 +320,7 @@
   let homePresenceUnsub = null;
   let nowInterval = null;
   function attachHomePresence() {
-    if (GH) return;
+    if (!PRESENCE_OK) return;
     detachHomePresence();
     Community.ensureSocket();
     homePresenceUnsub = Community.on('presence', (snap) => setNowPraying(snap));
@@ -359,7 +363,7 @@
   /* ------------- “Reza con alguien” dentro de la hora ---------------- */
   let hourOthersUnsub = null;
   function nowOthers() {
-    if (GH) return '';
+    if (!PRESENCE_OK) return '';
     return `<div class="now-others" id="now-others"></div>`;
   }
   function renderNowOthers() {
@@ -373,7 +377,7 @@
     el.innerHTML = `🤝 <b>${n}</b> ${n === 1 ? 'persona está' : 'personas están'} rezando <b>${Liturgy.esc(hx ? hx.name : 'esta hora')}</b> ahora mismo. <a href="#comunidad">Ver a quién</a>`;
   }
   function attachNowOthers() {
-    if (GH) return;
+    if (!PRESENCE_OK) return;
     detachNowOthers();
     Community.ensureSocket();
     hourOthersUnsub = Community.on('presence', renderNowOthers);
@@ -385,7 +389,7 @@
   }
 
   function geoPrompt() {
-    if (GH) return '';
+    if (!PRESENCE_OK) return '';
     if (localStorage.getItem('liturgia.loc.v1') !== null) return '';
     return `<div class="note-box geo-note">
       <b>Rezamos juntos ahora.</b> Al rezar una hora te unes de forma anónima al “coro invisible”: cuántas personas rezan la misma hora en este momento y, si lo permites, tu posición (sin nombre) aparece en el mapa. Sin rankings ni perfiles.
@@ -397,7 +401,7 @@
   }
 
   function attachGeoPrompt() {
-    if (GH) return;
+    if (!PRESENCE_OK) return;
     document.querySelectorAll('[data-geo]').forEach((b) => {
       b.addEventListener('click', () => {
         localStorage.setItem('liturgia.loc.v1', b.dataset.geo);
@@ -409,7 +413,7 @@
 
   /* -------------- Resultado de intenciones del día anterior -------------- */
   function checkIntentionNews() {
-    if (GH) return;
+    if (!PRESENCE_OK) return;
     const last = localStorage.getItem('liturgia.news.v1');
     const today = new Date().toISOString().slice(0, 10);
     if (last === today) return;
@@ -480,17 +484,16 @@
   const as = { raf: null, speed: 1, on: false, acc: 0 };
 
   // Reproducir y escuchar en voz alta viven como botones fijos del pie
-  // (Scroll y Audio); aquí solo queda, flotando encima del pie, el chip de
-  // velocidad del scroll —contextual a la pantalla de lectura actual—.
+  // (Scroll y Audio); la velocidad va integrada como una insignia pequeña
+  // sobre el propio botón "Scroll" del pie, no como una fila aparte encima.
   function asAppend() {
-    const dock = document.querySelector('#as-dock');
-    if (!dock) return;
+    const badge = document.querySelector('#as-speed');
+    if (!badge) return;
     const saved = parseInt(localStorage.getItem('liturgia.as.v1') || '1', 10);
     if (saved >= 0 && saved < AS_SPEEDS.length) as.speed = saved;
-    dock.innerHTML = `<div class="autoscroll" id="autoscroll">
-      <span class="as-label">Velocidad del scroll</span>
-      <button class="as-chip active" id="as-speed" title="Toca para cambiar la velocidad" aria-label="Velocidad: ${AS_SPEEDS[as.speed].k}. Toca para cambiar.">${AS_SPEEDS[as.speed].short}</button>
-    </div>`;
+    badge.textContent = AS_SPEEDS[as.speed].short;
+    badge.setAttribute('aria-label', `Velocidad: ${AS_SPEEDS[as.speed].k}. Toca para cambiar.`);
+    badge.classList.remove('hidden');
     wireAs();
   }
 
@@ -755,15 +758,26 @@
     if (btn) setSpeakIcon(btn, false);
   }
 
+  // La insignia vive siempre en el mismo botón del pie (no se recrea al
+  // cambiar de pantalla como antes la fila aparte): se engancha una sola
+  // vez para no acumular manejadores de clic en cada visita.
+  let asWired = false;
   function wireAs() {
     const speedBtn = document.querySelector('#as-speed');
-    if (speedBtn) speedBtn.addEventListener('click', () => {
+    if (!speedBtn || asWired) return;
+    asWired = true;
+    const cycle = (e) => {
+      e.stopPropagation();
       as.speed = (as.speed + 1) % AS_SPEEDS.length;
       localStorage.setItem('liturgia.as.v1', String(as.speed));
       const s = AS_SPEEDS[as.speed];
       speedBtn.textContent = s.short;
       speedBtn.setAttribute('aria-label', `Velocidad: ${s.k}. Toca para cambiar.`);
       if (as.on) { asStop(); asStart(); }
+    };
+    speedBtn.addEventListener('click', cycle);
+    speedBtn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); cycle(e); }
     });
   }
 
@@ -904,6 +918,25 @@
   /* ------------------------------ Oraciones ------------------------------ */
   function oracionesView() {
     let html = topBar('Oraciones', fmtDate(currentDate));
+
+    const R = Oraciones.ROSARIO;
+    const serieHoy = R.serieDelDia(currentDate);
+    const devociones = [
+      { href: '#rosario', key: 'rosario_' + serieHoy, titulo: 'Santo Rosario', fuente: 'Misterios ' + R.SERIE_NOMBRE[serieHoy] },
+      { href: '#coronilla', key: 'coronilla', titulo: 'Coronilla de la Divina Misericordia', fuente: 'La hora de la misericordia' },
+      { href: '#angelus', key: 'angelus', titulo: 'Ángelus', fuente: 'Las 12 de la mañana' }
+    ];
+    html += `<div class="section-title">Devociones</div>`;
+    html += '<div class="orac-list">';
+    for (const d of devociones) {
+      const done = Store.isPrayed(currentDate, d.key);
+      html += `<a class="orac-item${done ? ' done' : ''}" href="${d.href}">
+        <div class="orac-titulo">${Liturgy.esc(d.titulo)}${done ? ' &#10003;' : ''}</div>
+        <div class="orac-fuente">${Liturgy.esc(d.fuente)}</div>
+      </a>`;
+    }
+    html += '</div>';
+
     for (let gi = 0; gi < Oraciones.GRUPOS.length; gi++) {
       const items = Oraciones.ORACIONES.filter((o) => o.g === gi);
       if (!items.length) continue;
@@ -1101,8 +1134,12 @@
       const opts = Liturgy.optionsFor(data, hourId);
       if (!opts.length) { view.innerHTML = '<div class="note-box">No hay datos para esta hora en esta fecha.</div>'; showLoading(false); return; }
 
-      buildHourHtml(hourId, hx, opts, 0);
-      if (!GH) Community.joinHour(hourId);
+      let celebration = '';
+      if (opts.length > 1) {
+        try { celebration = (await Liturgy.ensure().getLiturgyInformation(currentDate)).celebration || ''; } catch (e) { celebration = ''; }
+      }
+      buildHourHtml(hourId, hx, opts, 0, celebration);
+      if (PRESENCE_OK) Community.joinHour(hourId);
     } catch (e) {
       view.innerHTML = errBox(e);
     }
@@ -2406,13 +2443,26 @@
     });
   }
 
-  function buildHourHtml(hourId, hx, opts, idx) {
+  // El id de cada opción es un identificador interno de la librería, en
+  // inglés y sin traducir (p. ej. "exaltation_xyz", "ordinary_abc"): no es
+  // texto para mostrar. Se etiqueta con la celebración real de hoy (ya
+  // calculada en español para la portada) para la opción propia de la
+  // fiesta, "Feria" para la ordinaria, y solo si no se puede saber cuál es
+  // cuál, un genérico "Opción N" -nunca la palabra en inglés tal cual-.
+  function optionLabel(o, idx, celebration) {
+    const raw = String((o && o.id) || '').toLowerCase();
+    if (/^(ferial|ordinary|weekday|feria)/.test(raw)) return 'Feria';
+    if (celebration && celebration !== 'Feria') return celebration;
+    return 'Opción ' + (idx + 1);
+  }
+
+  function buildHourHtml(hourId, hx, opts, idx, celebration) {
     const opt = opts[Math.min(idx, opts.length - 1)];
     const done = Store.isPrayed(currentDate, hourId);
     const optsHtml = opts.length > 1
       ? `<div class="btn-row option-bar-2">
            <span>Opción:</span>
-           <div class="seg">${opts.map((o, i) => `<button data-opt="${i}" class="${i === idx ? 'active' : ''}">${Liturgy.esc(o.id.split('_')[0])}</button>`).join('')}</div>
+           <div class="seg">${opts.map((o, i) => `<button data-opt="${i}" class="${i === idx ? 'active' : ''}">${Liturgy.esc(optionLabel(o, i, celebration))}</button>`).join('')}</div>
          </div>`
       : '';
 
@@ -2443,7 +2493,7 @@
     </div>`;
 
     html += `<div id="intentions-slot"></div>`;
-    if (!GH) html += nowOthers();
+    if (PRESENCE_OK) html += nowOthers();
 
     view.innerHTML = html;
 
@@ -2452,8 +2502,8 @@
     enhancePrayerText();
     attachAudioNotes();
     attachCustomText();
-    if (!GH) loadIntentions(intoSlot('#intentions-slot'));
-    if (!GH) attachNowOthers();
+    if (PRESENCE_OK) loadIntentions(intoSlot('#intentions-slot'));
+    if (PRESENCE_OK) attachNowOthers();
 
     const btnCoroH = $('#btn-modo-coro');
     if (btnCoroH) btnCoroH.addEventListener('click', async () => {
@@ -2470,7 +2520,7 @@
         btnDone.classList.toggle('marked', newState);
         btnDone.classList.toggle('primary', !newState);
         btnDone.innerHTML = newState ? '&#10003; Hora rezada' : 'Marcar como rezada';
-        if (newState && !GH) {
+        if (newState && PRESENCE_OK) {
           const snap = Community.status || {};
           const n = (snap.hours && snap.hours[hourId]) || 0;
           if (n >= 2) toast(`&#127881; Hoy <b>${n}</b> personas hemos rezado <b>${hx.name}</b> juntos.`);
@@ -2479,7 +2529,7 @@
     }
 
     document.querySelectorAll('.option-bar-2 [data-opt]').forEach((b) => {
-      b.addEventListener('click', () => buildHourHtml(hourId, hx, opts, parseInt(b.dataset.opt, 10)));
+      b.addEventListener('click', () => buildHourHtml(hourId, hx, opts, parseInt(b.dataset.opt, 10), celebration));
     });
   }
 
@@ -4001,7 +4051,7 @@
         <h3>Aviso legal y política de privacidad</h3>
         <p><b>Titular:</b> Ramón Fandos.<br>
         <b>Contacto:</b> fandosrj@gmail.com</p>
-        <p>Esta versión web <b>no crea cuentas</b> ni <b>utiliza cookies de rastreo</b> (ni propias, ni de terceros): el rezo, el progreso, los favoritos y los textos que importes se guardan únicamente en tu dispositivo${GH ? ', y no se envían a ningún servidor' : '; solo los datos anónimos de comunidad (presencia, intenciones, coros) descritos arriba viajan a nuestro servidor'}. La página se aloja en <b>${hostingInfo().name}</b>${hostingInfo().owner ? `, servicio de <b>${hostingInfo().owner}</b>` : ''}; ${hostingInfo().name}, como cualquier proveedor de hosting, puede registrar los datos de acceso habituales (IP, fecha, navegador) para su operativa y seguridad, sin relación con el contenido que rezas.</p>
+        <p>Esta versión web <b>no crea cuentas</b> ni <b>utiliza cookies de rastreo</b> (ni propias, ni de terceros): el rezo, el progreso, los favoritos y los textos que importes se guardan únicamente en tu dispositivo${!PRESENCE_OK ? ', y no se envían a ningún servidor' : '; solo los datos anónimos de comunidad (presencia, intenciones, coros) descritos arriba viajan a nuestro servidor'}. La página se aloja en <b>${hostingInfo().name}</b>${hostingInfo().owner ? `, servicio de <b>${hostingInfo().owner}</b>` : ''}; ${hostingInfo().name}, como cualquier proveedor de hosting, puede registrar los datos de acceso habituales (IP, fecha, navegador) para su operativa y seguridad, sin relación con el contenido que rezas.</p>
         <p><b>Estadísticas de visitas:</b> medimos cuántas personas visitan la web y qué páginas ven de forma <b>agregada y anónima</b> con <b>GoatCounter</b> (estadísticas de código abierto): no usa cookies, no guarda direcciones IP ni identificadores y no permite identificar a los usuarios. Sus datos se rigen por la política de GoatCounter (goatcounter.com).</p>
 
         <h3>Créditos</h3>
@@ -4317,7 +4367,7 @@
       const code = card.dataset.code;
       card.querySelectorAll('[data-mark]').forEach((m) => {
         m.addEventListener('click', () => {
-          Community.choirs.prayed(code, iso(currentDate), m.dataset.mark)
+          Community.choirs.prayed(code, localIso(currentDate), m.dataset.mark)
             .then(() => loadChoirToday(code))
             .catch((e) => { m.textContent = 'error'; });
         });
@@ -4331,7 +4381,7 @@
     const box = document.querySelector('#choir-' + code);
     if (!box) return;
     let data;
-    try { data = await Community.choirs.presence(code, iso(currentDate)); }
+    try { data = await Community.choirs.presence(code, localIso(currentDate)); }
     catch (e) { box.textContent = e.message; return; }
     const nowHour = recommendedHour();
     let html = '';
@@ -4405,7 +4455,7 @@
       asStop();
       detachHomePresence();
       detachNowOthers();
-      if (!GH && typeof Community !== 'undefined') Community.leaveHour();
+      if (PRESENCE_OK && typeof Community !== 'undefined') Community.leaveHour();
       if (window.LatinaRezado && LatinaRezado.detener) LatinaRezado.detener();
       setTab();
       route();
@@ -4509,7 +4559,7 @@
         card.appendChild(x);
         card.appendChild(h3);
         card.appendChild(mkP(b1, ' No te rastreamos ni identificamos: solo contamos visitas de forma anónima y agregada (GoatCounter).'));
-        card.appendChild(mkP('Tus rezos, progreso y favoritos quedan guardados solo en tu dispositivo y funcionan sin conexión', GH ? mk(', y no se envían a ningún servidor.') : '.'));
+        card.appendChild(mkP('Tus rezos, progreso y favoritos quedan guardados solo en tu dispositivo y funcionan sin conexión', !PRESENCE_OK ? mk(', y no se envían a ningún servidor.') : '.'));
         const hi1 = hostingInfo();
         card.appendChild(hi1.owner
           ? mkP('La página la crea y mantiene ', mk('Ramón Fandos'), ' (fandosrj@gmail.com) y se aloja en ', mk(hi1.name), ', servicio de ', mk(hi1.owner), '.')
@@ -4577,7 +4627,7 @@
       return;
     }
     await applyDayAccent();
-    if (!GH && typeof Community !== 'undefined') {
+    if ((PRESENCE_OK || SPACES_OK) && typeof Community !== 'undefined') {
       Community.ensureSocket();
       Community.on('chorevt', onChorevt);
       Community.on('space_update', () => {

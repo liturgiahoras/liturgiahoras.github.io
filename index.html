@@ -102,9 +102,6 @@
       <li><a href="#hora/visperas">Vísperas</a></li>
       <li><a href="#hora/completas">Completas</a></li>
       <li><a href="#misal">Misal y Lecturas del día</a></li>
-      <li><a href="#rosario">Santo Rosario</a></li>
-      <li><a href="#coronilla">Coronilla de la Divina Misericordia</a></li>
-      <li><a href="#angelus">Ángelus</a></li>
       <li><a href="#oraciones">Oraciones</a></li>
       <li><a href="#biblia">Biblia</a></li>
       <li><a href="#personal">Mis salmos y rezos</a></li>
@@ -126,7 +123,6 @@
 </main>
 
 <div class="bottom-dock" id="bottom-dock">
-  <div class="as-dock" id="as-dock"></div>
   <nav class="tabbar" id="tabbar" aria-label="Secciones">
     <a href="#hoy" class="tab" data-tab="hoy" aria-label="Hoy">
       <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M6 2a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6H6zm7 1.5L18.5 9H13V3.5zM8 12h8v2H8v-2zm0 4h8v2H8v-2z"/></svg>
@@ -137,6 +133,7 @@
       <span class="tab-label">Vísperas</span>
     </a>
     <button type="button" class="tab tab-action" id="tab-scroll" data-tab="scroll" aria-label="Activar el scroll automático de esta lectura">
+      <span class="as-badge hidden" id="as-speed" role="button" tabindex="0" aria-label="Cambiar la velocidad del scroll"></span>
       <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 5.83 15.17 9l1.41-1.41L12 3 7.42 7.59 8.83 9 12 5.83zm0 12.34L8.83 15l-1.41 1.41L12 21l4.58-4.59L15.17 15 12 18.17z"/></svg>
       <span class="tab-label">Scroll</span>
     </button>
