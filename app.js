@@ -631,7 +631,9 @@
 
   function stripForSpeech(node) {
     const clone = node.cloneNode(true);
-    clone.querySelectorAll('button, audio, .note-box-edit').forEach((n) => n.remove());
+    // ".vs" son las etiquetas "V./R." (quién habla): se leen en la pantalla,
+    // pero nadie las dice en voz alta al rezar -se lee el texto que sigue-.
+    clone.querySelectorAll('button, audio, .note-box-edit, .vs').forEach((n) => n.remove());
     return (clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
   }
 
@@ -646,6 +648,9 @@
     function walk(node) {
       if (node.nodeType === Node.TEXT_NODE) { buffer += node.textContent; return; }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
+      // ".vs" son las etiquetas "V./R." (quién habla): no se dicen en voz
+      // alta, solo el texto que las sigue.
+      if (node.classList && node.classList.contains('vs')) return;
       if (node.classList && node.classList.contains('psalm-block')) {
         flush();
         const refEl = node.querySelector('.psalm-ref');
@@ -1500,6 +1505,7 @@
     attachFavStars();
     enhancePrayerText();
     attachAudioNotes();
+    attachScoreNotes();
   }
 
   async function comunidadOficiosView() {
@@ -1899,6 +1905,7 @@
     attachFavStars();
     enhancePrayerText();
     attachAudioNotes();
+    attachScoreNotes();
   }
 
   async function comunidadVersionesView(spaceId, officeId) {
@@ -2394,6 +2401,7 @@
     attachFavStars();
     enhancePrayerText();
     attachAudioNotes();
+    attachScoreNotes();
     const btn = view.querySelector('#btn-done-of');
     if (btn) btn.addEventListener('click', () => {
       const ns = Store.togglePrayed(currentDate, doneId);
@@ -2434,6 +2442,7 @@
     attachFavStars();
     enhancePrayerText();
     attachAudioNotes();
+    attachScoreNotes();
 
     const btnCoroA = view.querySelector('#btn-modo-coro');
     if (btnCoroA) btnCoroA.addEventListener('click', () => entrarModoCoro(office));
@@ -2511,6 +2520,7 @@
     attachFavStars();
     enhancePrayerText();
     attachAudioNotes();
+    attachScoreNotes();
     attachCustomText();
     if (PRESENCE_OK) loadIntentions(intoSlot('#intentions-slot'));
     if (PRESENCE_OK) attachNowOthers();
@@ -3021,6 +3031,200 @@
     refEl.insertAdjacentElement('afterend', top);
   }
 
+  // Una grabación de voz no se puede rehacer si se pierde: en cuanto se
+  // guarda, si ya hay una carpeta conectada se intenta subir al momento
+  // -aprovechando que el propio gesto de grabar/parar vale como permiso-,
+  // en vez de esperar al aviso silencioso (que no vale para pedir permiso
+  // si hiciera falta). Devuelve qué decir en el aviso al usuario.
+  async function backupAudioNow() {
+    if (!(window.CloudBackup && CloudBackup.status)) return 'local';
+    try {
+      const st = await CloudBackup.status();
+      if (!st.connected) return 'local';
+      const r = await CloudBackup.backupNow(true);
+      return r.ok ? 'nube' : 'fallo';
+    } catch (e) { return 'fallo'; }
+  }
+  function audioSavedToast(where) {
+    if (where === 'nube') toast('Grabación guardada en este dispositivo y en tu nube.');
+    else if (where === 'fallo') toast('Grabación guardada en este dispositivo; no se pudo subir a tu nube ahora mismo (se reintentará solo).');
+    else toast('Grabación guardada en este dispositivo. <a href="#ajustes">Conecta una carpeta</a> para tenerla también en tu nube.');
+  }
+
+  /* ------------------------- Partituras y melodía ------------------------- */
+  // El mismo salmo puede llevar antífonas distintas según el día, y cada
+  // antífona trae su propio tono: la melodía del salmo depende de CUÁL
+  // antífona lo acompaña, no solo de qué salmo es. Por eso la partitura se
+  // liga a la pareja (antífona + salmo), no solo al salmo -si cambia la
+  // antífona, es una pareja distinta y pide su propia melodía-.
+  function scorePieceId(ref, ant) {
+    const key = ant ? (ant + ' :: ' + ref) : ref;
+    return Favs.idFor(key) + '-partitura';
+  }
+
+  async function playScoreItem(it, instrument, onEnd) {
+    try {
+      if (it.kind === 'midi') await MidiPlayer.play(it.blob, instrument, onEnd);
+      else if (it.kind === 'melodia') {
+        const text = await it.blob.text();
+        await MidiPlayer.playMelodyText(text, instrument, 76, onEnd);
+      } else if (onEnd) onEnd();
+    } catch (e) {
+      toast('No se pudo reproducir: ' + Liturgy.esc(e.message || ''));
+      if (onEnd) onEnd();
+    }
+  }
+  function playScoreSequence(items, instrument) {
+    let idx = 0;
+    const next = () => { if (idx < items.length) playScoreItem(items[idx++], instrument, next); };
+    next();
+  }
+
+  function attachScoreNotes() {
+    try {
+      if (!window.ScoreNotes || !ScoreNotes.supported() || !window.MidiPlayer) return;
+      const blocks = view.querySelectorAll('.psalm-block');
+      if (!blocks || !blocks.length) return;
+      blocks.forEach((blk) => {
+        const refEl = blk.querySelector('.psalm-ref');
+        if (!refEl) return;
+        const ref = (refEl.textContent || '').replace(/[★☆📝🎙️🎵🎼]/gu, '').trim();
+        if (!ref) return;
+        const antEl = blk.querySelector('.ant');
+        const ant = antEl ? antEl.textContent.trim() : '';
+        const pieceId = scorePieceId(ref, ant);
+
+        const scoreBtn = document.createElement('button');
+        scoreBtn.className = 'score-s';
+        scoreBtn.setAttribute('aria-label', 'Partituras y melodía de este salmo');
+        scoreBtn.innerHTML = '&#127932;';
+        refEl.appendChild(scoreBtn);
+
+        ScoreNotes.list(pieceId).then((items) => { if (items.length) scoreBtn.classList.add('on'); });
+
+        let box = null;
+        function closeBox() { if (box) { box.remove(); box = null; } MidiPlayer.stop(); }
+
+        async function renderBox() {
+          if (box) box.remove();
+          box = document.createElement('div');
+          box.className = 'note-box-edit';
+          const items = await ScoreNotes.list(pieceId);
+          const playable = items.filter((it) => it.kind === 'midi' || it.kind === 'melodia');
+          const savedInstr = localStorage.getItem('liturgia.instrumento.v1') || 'sencillo';
+          const kindLabel = { imagen: 'Imagen', pdf: 'PDF', musicxml: 'MusicXML', midi: 'MIDI', melodia: 'Melodía escrita', archivo: 'Archivo' };
+
+          let inner = ant
+            ? `<div class="desc" style="font-family:var(--sans);font-size:.82rem;color:var(--ink-soft);margin-bottom:8px">Para esta antífona (<em>${Liturgy.esc(ant.slice(0, 60))}${ant.length > 60 ? '…' : ''}</em>) y este salmo. Si otro día cambia la antífona, sus partituras van aparte -el tono no es el mismo-.</div>`
+            : '';
+
+          if (items.length) {
+            inner += '<div class="score-items">';
+            for (const it of items) {
+              inner += `<div class="score-item">
+                <span class="score-item-label"><b>${Liturgy.esc(it.label)}</b> · ${kindLabel[it.kind] || it.kind}</span>
+                <div class="btn-row" style="margin:4px 0 10px">
+                  ${(it.kind === 'imagen' || it.kind === 'pdf' || it.kind === 'musicxml') ? `<button type="button" class="btn small score-open" data-open="${it.itemId}">${it.kind === 'pdf' ? 'Abrir PDF' : (it.kind === 'musicxml' ? 'Descargar' : 'Ver')}</button>` : ''}
+                  ${(it.kind === 'midi' || it.kind === 'melodia') ? `<button type="button" class="btn small score-play" data-play="${it.itemId}">&#9654; Reproducir</button>` : ''}
+                  <button type="button" class="btn small score-delete" data-del="${it.itemId}">Eliminar</button>
+                </div>
+              </div>`;
+            }
+            inner += '</div>';
+            if (playable.length > 1) inner += `<div class="btn-row"><button type="button" class="btn primary" id="score-play-all">&#9654; Reproducir todo en orden</button></div>`;
+          } else {
+            inner += `<div class="desc" style="font-family:var(--sans);font-size:.85rem;color:var(--ink-soft);margin-bottom:8px">Todavía no hay ninguna partitura ni melodía aquí.</div>`;
+          }
+
+          inner += `<label class="field-label" for="score-instrument">Instrumento (al reproducir)</label>
+            <select class="input" id="score-instrument">
+              ${Object.keys(MidiPlayer.INSTRUMENTS).map((k) => `<option value="${k}"${k === savedInstr ? ' selected' : ''}>${Liturgy.esc(MidiPlayer.INSTRUMENTS[k].label)}</option>`).join('')}
+            </select>
+
+            <div class="section-sub" style="margin-top:12px">Añadir otra</div>
+            <label class="field-label" for="score-label-input">Nombre (p. ej. «Antífona», «Salmo», «Terminación en re»)</label>
+            <input type="text" class="input" id="score-label-input" placeholder="${ant ? 'Antífona' : 'Salmo'}">
+            <div class="btn-row" style="flex-wrap:wrap">
+              <input type="file" id="score-file-input" accept="image/*,application/pdf,.musicxml,.mxl,.xml,.mid,.midi" style="max-width:100%">
+            </div>
+            <div class="btn-row"><button type="button" class="btn" id="score-write-melody-btn">&#9835; Escribir la melodía yo mismo</button></div>
+            <div id="score-melody-form" class="hidden">
+              <label class="field-label" for="score-melody-text">Notas separadas por espacios (sol4 sol4 sol4 fa4:2 mi4 re4:2, o en inglés: C4 D4 E4…; "-" es un silencio)</label>
+              <textarea class="input" id="score-melody-text" rows="2" style="width:100%"></textarea>
+              <div class="btn-row"><button type="button" class="btn primary" id="score-melody-save">Guardar esta melodía</button></div>
+            </div>
+            <div id="score-msg" style="font-family:var(--sans);font-size:.85rem;color:var(--ink-soft);margin-top:6px"></div>
+            <div class="btn-row"><button class="btn note-cancel">Cerrar</button></div>`;
+
+          box.innerHTML = inner;
+          refEl.insertAdjacentElement('afterend', box);
+          box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+          const msg = (t) => { const el = box.querySelector('#score-msg'); if (el) el.textContent = t; };
+          const getInstrument = () => (box.querySelector('#score-instrument') || {}).value || savedInstr;
+          const rememberInstrument = () => { const sel = box.querySelector('#score-instrument'); if (sel) { try { localStorage.setItem('liturgia.instrumento.v1', sel.value); } catch (e) { } } };
+
+          box.querySelectorAll('[data-open]').forEach((b) => {
+            b.addEventListener('click', async () => {
+              const it = await ScoreNotes.get(b.dataset.open);
+              if (!it) return;
+              const url = URL.createObjectURL(it.blob);
+              window.open(url, '_blank');
+              setTimeout(() => URL.revokeObjectURL(url), 60000);
+            });
+          });
+          box.querySelectorAll('[data-play]').forEach((b) => {
+            b.addEventListener('click', async () => {
+              rememberInstrument();
+              const it = await ScoreNotes.get(b.dataset.play);
+              if (it) playScoreItem(it, getInstrument());
+            });
+          });
+          box.querySelectorAll('[data-del]').forEach((b) => {
+            b.addEventListener('click', async () => {
+              if (!confirm('¿Eliminar esta partitura?')) return;
+              await ScoreNotes.remove(b.dataset.del);
+              renderBox();
+            });
+          });
+          const playAll = box.querySelector('#score-play-all');
+          if (playAll) playAll.addEventListener('click', () => { rememberInstrument(); playScoreSequence(playable, getInstrument()); });
+
+          const fileInput = box.querySelector('#score-file-input');
+          if (fileInput) fileInput.addEventListener('change', async () => {
+            const file = fileInput.files && fileInput.files[0];
+            if (!file) return;
+            const label = (box.querySelector('#score-label-input') || {}).value || '';
+            await ScoreNotes.add(pieceId, label, file);
+            scoreBtn.classList.add('on');
+            msg('Guardado en este dispositivo.');
+            renderBox();
+          });
+          const writeBtn = box.querySelector('#score-write-melody-btn');
+          if (writeBtn) writeBtn.addEventListener('click', () => { box.querySelector('#score-melody-form').classList.remove('hidden'); });
+          const melodySave = box.querySelector('#score-melody-save');
+          if (melodySave) melodySave.addEventListener('click', async () => {
+            const text = (box.querySelector('#score-melody-text') || {}).value || '';
+            try { MidiPlayer.parseMelodyText(text); } catch (e) { msg(e.message); return; }
+            const label = (box.querySelector('#score-label-input') || {}).value || 'Melodía';
+            const file = new File([text], 'melodia.txt', { type: 'text/plain' });
+            await ScoreNotes.add(pieceId, label, file, 'melodia');
+            scoreBtn.classList.add('on');
+            msg('Melodía guardada.');
+            renderBox();
+          });
+          box.querySelector('.note-cancel').addEventListener('click', closeBox);
+        }
+
+        scoreBtn.addEventListener('click', (ev) => {
+          ev.preventDefault(); ev.stopPropagation();
+          if (box) { closeBox(); return; }
+          renderBox();
+        });
+      });
+    } catch (e) { /* DOM muy sencillo en pruebas: se omite */ }
+  }
+
   function attachAudioNotes() {
     try {
       if (!window.AudioNotes || !AudioNotes.supported()) return;
@@ -3113,7 +3317,7 @@
                     await AudioNotes.save(id, blob);
                     audioBtn.classList.add('on');
                     await refreshTopPlayer(blk, refEl, id);
-                    toast('Grabación guardada en este dispositivo.');
+                    audioSavedToast(await backupAudioNow());
                     renderBox();
                   } catch (e) {
                     toast('No se pudo guardar la grabación.');
@@ -3154,7 +3358,7 @@
                   mediaRecorder = null;
                   recordingBtn = null;
                   await refreshTopPlayer(blk, refEl, id);
-                  toast('Grabación guardada en este dispositivo.');
+                  audioSavedToast(await backupAudioNow());
                   renderBox();
                 };
                 mediaRecorder.start();
@@ -3172,7 +3376,7 @@
               await AudioNotes.save(id, file);
               audioBtn.classList.add('on');
               await refreshTopPlayer(blk, refEl, id);
-              toast('Audio guardado en este dispositivo.');
+              audioSavedToast(await backupAudioNow());
               renderBox();
             });
           }
@@ -3872,7 +4076,7 @@
     if (restore) restore.addEventListener('click', async () => {
       restore.disabled = true; restore.textContent = 'Restaurando…';
       const r = await CloudBackup.restoreFromFolder(true);
-      if (r.ok) msg(`Traído de la carpeta: ${r.nuevos} elemento(s) nuevo(s), ${r.audios} grabación(es).`);
+      if (r.ok) msg(`Traído de la carpeta: ${r.nuevos} elemento(s) nuevo(s), ${r.audios} grabación(es), ${r.scores || 0} partitura(s).`);
       else msg('No se pudo restaurar' + (r.error === 'sin-copia-todavia' ? ': esa carpeta todavía no tiene ninguna copia guardada.' : '.'));
       restore.disabled = false; restore.textContent = 'Restaurar desde la carpeta';
     });
@@ -4551,6 +4755,16 @@
       route();
       window.scrollTo(0, 0);
     });
+
+    // Cambiar de pestaña, minimizar la app o cerrarla no debe dejar la voz
+    // sonando sin que se vea el botón de "Detener" en ninguna parte -antes
+    // solo se paraba al navegar DENTRO de la app (hashchange), no al salir-.
+    const stopAllSpeech = () => {
+      stopSpeak();
+      if (window.LatinaRezado && LatinaRezado.detener) LatinaRezado.detener();
+    };
+    document.addEventListener('visibilitychange', () => { if (document.hidden) stopAllSpeech(); });
+    window.addEventListener('pagehide', stopAllSpeech);
   }
 
   function setTab() {

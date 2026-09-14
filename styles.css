@@ -744,6 +744,17 @@ body {
 }
 .audio-s:hover { color: var(--accent); }
 .audio-s.on { color: var(--accent-ink); }
+.score-s {
+  float: right;
+  border: none; background: transparent; cursor: pointer;
+  color: var(--ink-faint); font-size: 0.92rem; line-height: 1;
+  padding: 2px 4px; margin-left: 4px; vertical-align: middle;
+}
+.score-s:hover { color: var(--accent); }
+.score-s.on { color: var(--accent-ink); }
+.score-item { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+.score-item:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+.score-item-label { font-family: var(--sans); font-size: 0.88rem; }
 .audio-player { margin-top: 4px; }
 .audio-player-top { display: block; width: 100%; margin: 6px 0 10px; }
 .note-box-edit {
